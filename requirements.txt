@@ -1,0 +1,7 @@
+discord.py
+Pillow
+matplotlib
+mcstatus
+paramiko
+pyyaml
+aiohttp
