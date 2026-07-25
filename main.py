@@ -54,6 +54,53 @@ CUSTOM_REACTIONS = [
 ]
 CROWN_EMOJI = discord.PartialEmoji(name="crown", id=1506904987845001236)
 
+# ==================== НОВЫЕ КОНСТАНТЫ ДЛЯ СООБЩЕНИЙ ====================
+ROLE_500 = 1505457763894165595
+ROLE_1000 = 1505479667954487398
+ROLE_3000 = 1530587772132528353
+ROLE_10000 = 1505480198580080650
+
+COUNT_CHANNELS = [
+    1505239843486306374,
+    1505266075347193976,
+    1505822985309917274,
+    1525488573950853342
+]
+UNVERIFIED_ALLOWED_CATEGORY = 1505265810015523016
+BOT_CHANNEL = 1505591602360615015
+
+LEVEL_THRESHOLDS = {
+    1: 0,
+    2: 10,
+    3: 25,
+    4: 50,
+    5: 100,
+    6: 200,
+    7: 350,
+    8: 500,
+    9: 700,
+    10: 1000,
+    11: 1300,
+    12: 1700,
+    13: 2100,
+    14: 2600,
+    15: 3100,
+    16: 3700,
+    17: 4400,
+    18: 5200,
+    19: 6100,
+    20: 10000
+}
+
+MESSAGE_COUNTS_FILE = "message_counts.json"
+
+def get_level(count: int) -> int:
+    lvl = 1
+    for level, threshold in LEVEL_THRESHOLDS.items():
+        if count >= threshold:
+            lvl = level
+    return lvl
+
 # ==================== JSON-ФУНКЦИИ ====================
 def load_json(filepath, default):
     if os.path.exists(filepath):
@@ -71,6 +118,13 @@ def save_json(filepath, data):
             json.dump(data, f, ensure_ascii=False, indent=4)
     except Exception as e:
         print(f"❌ Ошибка сохранения {filepath}: {e}")
+
+# ==================== СЧЁТЧИКИ СООБЩЕНИЙ ====================
+def load_message_counts():
+    return load_json(MESSAGE_COUNTS_FILE, {})
+
+def save_message_counts(data):
+    save_json(MESSAGE_COUNTS_FILE, data)
 
 # ==================== SFTP ====================
 sftp_cache = {"data": None, "timestamp": 0}
@@ -256,6 +310,26 @@ def format_time(seconds: int) -> str:
         return f"{minutes}м {secs:02d}с"
     else:
         return f"{secs}с"
+
+# ==================== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ВЫДАЧИ РОЛЕЙ ====================
+async def check_and_assign_roles(member: discord.Member, count: int):
+    guild = member.guild
+    if not guild:
+        return
+
+    role_500 = guild.get_role(ROLE_500)
+    role_1000 = guild.get_role(ROLE_1000)
+    role_3000 = guild.get_role(ROLE_3000)
+    role_10000 = guild.get_role(ROLE_10000)
+
+    if count >= 10000 and role_10000 and role_10000 not in member.roles:
+        await member.add_roles(role_10000, reason="Достигнуто 10000 сообщений")
+    elif count >= 3000 and role_3000 and role_3000 not in member.roles:
+        await member.add_roles(role_3000, reason="Достигнуто 3000 сообщений")
+    elif count >= 1000 and role_1000 and role_1000 not in member.roles:
+        await member.add_roles(role_1000, reason="Достигнуто 1000 сообщений")
+    elif count >= 500 and role_500 and role_500 not in member.roles:
+        await member.add_roles(role_500, reason="Достигнуто 500 сообщений")
 
 # ==================== СЛЭШ-КОМАНДЫ ====================
 @app_commands.command(name="lk", description="📊 Показать личный кабинет (свой или другого игрока)")
@@ -682,17 +756,146 @@ async def setup_applications(interaction: discord.Interaction):
     await channel.send(embed=embed, view=view)
     await interaction.followup.send("✅ Сообщение с заявками отправлено в канал!", ephemeral=True)
 
-# ==================== НОВАЯ КОМАНДА /send ====================
+# ==================== НОВЫЕ КОМАНДЫ ДЛЯ СООБЩЕНИЙ ====================
+@app_commands.command(name="messages", description="📊 Показать количество сообщений и уровень")
+@app_commands.describe(user="Пользователь (оставьте пустым для себя)")
+async def messages(interaction: discord.Interaction, user: discord.Member = None):
+    if interaction.channel.id != BOT_CHANNEL:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{BOT_CHANNEL}>.", ephemeral=True)
+        return
+    target = user or interaction.user
+    counts = load_message_counts()
+    count = counts.get(str(target.id), 0)
+    level = get_level(count)
+
+    embed = discord.Embed(
+        title=f"📊 Статистика сообщений",
+        color=0x5865F2,
+        timestamp=datetime.now(MSK)
+    )
+    embed.add_field(name="👤 Пользователь", value=target.mention, inline=False)
+    embed.add_field(name="✉️ Сообщений", value=f"`{count}`", inline=True)
+    embed.add_field(name="🏆 Уровень", value=f"`{level}` из 20", inline=True)
+    embed.set_footer(text="Kingdom of Joy | Статистика", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+    await interaction.response.send_message(embed=embed)
+
+@app_commands.command(name="top", description="🏆 Топ-10 по сообщениям")
+async def top(interaction: discord.Interaction):
+    if interaction.channel.id != BOT_CHANNEL:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{BOT_CHANNEL}>.", ephemeral=True)
+        return
+    counts = load_message_counts()
+    if not counts:
+        await interaction.response.send_message("❌ Нет данных.")
+        return
+
+    sorted_users = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
+    embed = discord.Embed(
+        title="🏆 Топ-10 по сообщениям",
+        color=0xf1c40f,
+        timestamp=datetime.now(MSK)
+    )
+    medals = ["🥇", "🥈", "🥉"]
+    description = ""
+    for i, (user_id, count) in enumerate(sorted_users):
+        try:
+            user = await interaction.client.fetch_user(int(user_id))
+            name = user.display_name
+        except:
+            name = f"Неизвестный ({user_id})"
+        medal = medals[i] if i < 3 else f"`#{i+1}`"
+        description += f"{medal} **{name}** — `{count}` сообщений\n"
+    embed.description = description
+    embed.set_footer(text="Kingdom of Joy | Топ", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+    await interaction.response.send_message(embed=embed)
+
+# ==================== АДМИН-КОМАНДЫ ДЛЯ РУКОВОДСТВА ====================
+@app_commands.command(name="setmessages", description="⚙️ Установить точное количество сообщений пользователю")
+@app_commands.describe(user="Пользователь", count="Новое количество")
+async def setmessages(interaction: discord.Interaction, user: discord.Member, count: int):
+    if not any(r.id == 1526681612337549343 for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+    if count < 0:
+        await interaction.response.send_message("❌ Количество не может быть отрицательным.", ephemeral=True)
+        return
+
+    counts = load_message_counts()
+    counts[str(user.id)] = count
+    save_message_counts(counts)
+
+    await check_and_assign_roles(user, count)
+
+    await interaction.response.send_message(f"✅ Пользователю {user.mention} установлено `{count}` сообщений.", ephemeral=True)
+    await send_log(interaction.guild, "⚙️ Установлено сообщений", f"Руководство {interaction.user.mention} установило {user.mention} сообщений = {count}", color=0x3498db)
+
+@app_commands.command(name="addmessages", description="➕ Добавить сообщения пользователю")
+@app_commands.describe(user="Пользователь", amount="Количество для добавления")
+async def addmessages(interaction: discord.Interaction, user: discord.Member, amount: int):
+    if not any(r.id == 1526681612337549343 for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+    if amount < 0:
+        await interaction.response.send_message("❌ Количество не может быть отрицательным.", ephemeral=True)
+        return
+
+    counts = load_message_counts()
+    current = counts.get(str(user.id), 0)
+    new_count = current + amount
+    counts[str(user.id)] = new_count
+    save_message_counts(counts)
+
+    await check_and_assign_roles(user, new_count)
+
+    await interaction.response.send_message(f"✅ Пользователю {user.mention} добавлено `{amount}` сообщений. Теперь: `{new_count}`.", ephemeral=True)
+    await send_log(interaction.guild, "➕ Добавлены сообщения", f"Руководство {interaction.user.mention} добавил {user.mention} +{amount} сообщений (теперь {new_count})", color=0x2ecc71)
+
+@app_commands.command(name="resetmessages", description="🔄 Обнулить счётчики всем авторизованным пользователям (дать 1 уровень)")
+async def resetmessages(interaction: discord.Interaction):
+    if not any(r.id == 1526681612337549343 for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+
+    # Подтверждение
+    await interaction.response.send_message("⚠️ Вы уверены, что хотите обнулить счётчики ВСЕМ авторизованным пользователям? Напишите `подтвердить` в течение 30 секунд.", ephemeral=True)
+
+    def check(msg):
+        return msg.author == interaction.user and msg.content.lower() == "подтвердить"
+    try:
+        await interaction.client.wait_for("message", timeout=30.0, check=check)
+    except asyncio.TimeoutError:
+        await interaction.followup.send("❌ Операция отменена.", ephemeral=True)
+        return
+
+    counts = load_message_counts()
+    guild = interaction.guild
+    # Обнуляем только тех, у кого есть роль VERIFY_ROLE_ID
+    for user_id in list(counts.keys()):
+        member = guild.get_member(int(user_id))
+        if member and VERIFY_ROLE_ID in [r.id for r in member.roles]:
+            counts[user_id] = 0
+            # Снимаем роли за сообщения
+            await member.remove_roles(
+                guild.get_role(ROLE_500),
+                guild.get_role(ROLE_1000),
+                guild.get_role(ROLE_3000),
+                guild.get_role(ROLE_10000),
+                reason="Обнуление счётчика сообщений"
+            )
+    save_message_counts(counts)
+
+    await interaction.followup.send("✅ Счётчики всех авторизованных пользователей обнулены, роли за сообщения сняты.", ephemeral=True)
+    await send_log(interaction.guild, "🔄 Обнуление счётчиков", f"Руководство {interaction.user.mention} обнулило счётчики всех авторизованных.", color=0xe67e22)
+
+# ==================== КОМАНДА /send (уже была) ====================
 @app_commands.command(name="send", description="📨 Отправить объявление/сообщение в канал (только для руководства)")
 @app_commands.describe(text="Текст сообщения", color="Цвет в HEX (например #ff0000)")
 async def send_cmd(interaction: discord.Interaction, text: str, color: str = None):
-    # Проверка прав: только роль руководства проекта (1526681612337549343)
     if not any(r.id == 1526681612337549343 for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
         await interaction.response.send_message("❌ У вас нет прав на использование этой команды.", ephemeral=True)
         return
 
-    # Преобразуем цвет
-    embed_color = 0x5865F2  # дефолтный
+    embed_color = 0x5865F2
     if color:
         try:
             embed_color = int(color.lstrip('#'), 16)
@@ -868,13 +1071,12 @@ class SupportHubView(discord.ui.View):
         )
     @discord.ui.button(label="Высшее Руководство", style=discord.ButtonStyle.secondary, emoji="👑", custom_id="support_management_btn", row=1)
     async def create_management_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Исправлено: убран CREATOR_ROLE_ID, добавлена роль руководства проекта (1526681612337549343)
         await self._create_private_ticket(
             interaction,
             "👑-руководство",
             "Приватный Сектор Высшего Совета",
             "Прямой канал связи с Создателем и Основателями проекта для решения конфиденциальных, административных и важных вопросов.",
-            [1526681612337549343, FOUNDER_ROLE_ID],  # убрали CREATOR_ROLE_ID
+            [1526681612337549343, FOUNDER_ROLE_ID],
             0xf1c40f
         )
 
@@ -1079,7 +1281,12 @@ class KingdomBot(commands.Bot):
         self.tree.add_command(staff)
         self.tree.add_command(setup_support)
         self.tree.add_command(setup_applications)
-        self.tree.add_command(send_cmd)  # новая команда
+        self.tree.add_command(send_cmd)
+        self.tree.add_command(messages)
+        self.tree.add_command(top)
+        self.tree.add_command(setmessages)
+        self.tree.add_command(addmessages)
+        self.tree.add_command(resetmessages)
         try:
             from mc_status import StatusButtonsView
             self.add_view(StatusButtonsView())
@@ -1318,6 +1525,31 @@ class KingdomBot(commands.Bot):
     async def on_message(self, message):
         if message.author == self.user:
             return
+
+        # ========== ЗАЩИТА ОТ НЕВЕРИФИЦИРОВАННЫХ ==========
+        if isinstance(message.channel, discord.TextChannel) and message.guild:
+            member = message.author
+            has_verify = any(r.id == VERIFY_ROLE_ID for r in member.roles)
+            # Проверяем, не находится ли канал в категории, где разрешено писать без верификации
+            if not has_verify and message.channel.category_id != UNVERIFIED_ALLOWED_CATEGORY:
+                try:
+                    await message.delete()
+                    await message.author.send(f"⚠️ Для отправки сообщений пройдите верификацию в канале <#{VERIFY_CHANNEL_ID}>.")
+                except:
+                    pass
+                return
+
+        # ========== ПОДСЧЁТ СООБЩЕНИЙ ==========
+        if isinstance(message.channel, discord.TextChannel) and message.channel.id in COUNT_CHANNELS:
+            if not message.author.bot:
+                counts = load_message_counts()
+                user_id = str(message.author.id)
+                new_count = counts.get(user_id, 0) + 1
+                counts[user_id] = new_count
+                save_message_counts(counts)
+                await check_and_assign_roles(message.author, new_count)
+
+        # ========== ОСТАЛЬНАЯ ОБРАБОТКА ==========
         lowered_content = message.content.lower().strip()
         if lowered_content.startswith("!sync"):
             if message.author.id != 1437779380184158249:
@@ -1337,6 +1569,7 @@ class KingdomBot(commands.Bot):
             except Exception as e:
                 await status_msg.edit(content=f"❌ Ошибка синхронизации: `{e}`")
             return
+
         if lowered_content.startswith(("!мут", "!бан", "!варн", "!удалить")):
             if not self.is_allowed_staff_sync(message):
                 await message.channel.send("❌ У вас недостаточно прав для использования этой команды.", delete_after=5)
@@ -1406,6 +1639,7 @@ class KingdomBot(commands.Bot):
                 except Exception as e:
                     await message.channel.send(f"❌ Ошибка: {e}")
             return
+
         chance_triggers = ("правда ли", "какова вероятность", "инфа что", "шанс что", "инфа ")
         if lowered_content.startswith(chance_triggers):
             val = random.randint(0, 100)
@@ -1414,11 +1648,13 @@ class KingdomBot(commands.Bot):
                 mention_author=False
             )
             return
+
         if message.channel.id == MEDIA_CHANNEL_ID and not message.thread:
             try:
                 await message.create_thread(name="💬 Комментарии")
             except Exception:
                 pass
+
         if isinstance(message.channel, discord.TextChannel) and message.channel.id == SUPPORT_CHANNEL_ID:
             if message.type == discord.MessageType.thread_created or message.author != self.user:
                 try:
@@ -1426,8 +1662,10 @@ class KingdomBot(commands.Bot):
                 except Exception:
                     pass
                 return
+
         if not isinstance(message.channel, discord.TextChannel):
             return
+
         badwords_cfg = load_json(BADWORDS_FILE, {})
         words = badwords_cfg.get("words", [])
         if words and any(w in lowered_content for w in words):
@@ -1446,6 +1684,7 @@ class KingdomBot(commands.Bot):
             else:
                 await message.channel.send(make_blockquote(f"⚠️ {message.author.mention}, запрещенное слово! ({self.user_badword_counts[uid]}/3)"), delete_after=5)
             return
+
         if message.id not in self.reacted_messages:
             placed = False
             if any(u.id in CREATOR_AND_ROLE_IDS for u in message.mentions) or any(t in message.content for t in SPECIAL_TRIGGERS):
@@ -1462,6 +1701,7 @@ class KingdomBot(commands.Bot):
                     pass
             if placed:
                 self.reacted_messages.add(message.id)
+
         await self.process_commands(message)
 
     def is_allowed_staff_sync(self, message: discord.Message) -> bool:
