@@ -25,7 +25,7 @@ APPLICATIONS_CHANNEL_ID = 1530237443767533748
 ROLE_MAPPER = 1525487051544203395
 ROLE_MODERATOR = 1505275521825771520
 ROLE_CINEMA = 1505250838053126345
-ROLE_GIRL = 1505251541039321290  # роль для девушки
+ROLE_GIRL = 1505251541039321290
 HIGHER_ROLES = [1526681612337549343, 1505438802653741096, 1530235500886102216, 1505235504826814535]
 MSK = timezone(timedelta(hours=3))
 WARNS_FILE = "warns.json"
@@ -682,6 +682,33 @@ async def setup_applications(interaction: discord.Interaction):
     await channel.send(embed=embed, view=view)
     await interaction.followup.send("✅ Сообщение с заявками отправлено в канал!", ephemeral=True)
 
+# ==================== НОВАЯ КОМАНДА /send ====================
+@app_commands.command(name="send", description="📨 Отправить объявление/сообщение в канал (только для руководства)")
+@app_commands.describe(text="Текст сообщения", color="Цвет в HEX (например #ff0000)")
+async def send_cmd(interaction: discord.Interaction, text: str, color: str = None):
+    # Проверка прав: только роль руководства проекта (1526681612337549343)
+    if not any(r.id == 1526681612337549343 for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
+        await interaction.response.send_message("❌ У вас нет прав на использование этой команды.", ephemeral=True)
+        return
+
+    # Преобразуем цвет
+    embed_color = 0x5865F2  # дефолтный
+    if color:
+        try:
+            embed_color = int(color.lstrip('#'), 16)
+        except:
+            embed_color = 0x5865F2
+
+    embed = discord.Embed(
+        description=text,
+        color=embed_color,
+        timestamp=datetime.now(MSK)
+    )
+    embed.set_footer(text="Kingdom of Joy | Объявление", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+
+    await interaction.response.send_message(embed=embed)
+    await send_log(interaction.guild, "📨 Отправлено объявление", f"Руководство {interaction.user.mention} отправил объявление в канале {interaction.channel.mention}", color=embed_color)
+
 # ==================== UI КОМПОНЕНТЫ ====================
 class WelcomeButtonsView(discord.ui.View):
     def __init__(self, guild_id: int = 0):
@@ -841,12 +868,13 @@ class SupportHubView(discord.ui.View):
         )
     @discord.ui.button(label="Высшее Руководство", style=discord.ButtonStyle.secondary, emoji="👑", custom_id="support_management_btn", row=1)
     async def create_management_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Исправлено: убран CREATOR_ROLE_ID, добавлена роль руководства проекта (1526681612337549343)
         await self._create_private_ticket(
             interaction,
             "👑-руководство",
             "Приватный Сектор Высшего Совета",
             "Прямой канал связи с Создателем и Основателями проекта для решения конфиденциальных, административных и важных вопросов.",
-            [CREATOR_ROLE_ID, FOUNDER_ROLE_ID],
+            [1526681612337549343, FOUNDER_ROLE_ID],  # убрали CREATOR_ROLE_ID
             0xf1c40f
         )
 
@@ -1051,6 +1079,7 @@ class KingdomBot(commands.Bot):
         self.tree.add_command(staff)
         self.tree.add_command(setup_support)
         self.tree.add_command(setup_applications)
+        self.tree.add_command(send_cmd)  # новая команда
         try:
             from mc_status import StatusButtonsView
             self.add_view(StatusButtonsView())
