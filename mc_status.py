@@ -78,11 +78,14 @@ async def check_mc_server():
             try:
                 server = JavaServer(host, port)
                 status = await server.async_status()
-                return True, status.players.online, status.players.max
+                # Получаем список игроков, если есть
+                players_sample = status.players.sample if status.players.sample else []
+                player_names = [p.name for p in players_sample]
+                return True, status.players.online, status.players.max, player_names
             except Exception as e:
                 print(f"⚠️ Порт открыт, сбой mcstatus ({host}:{port}): {e}")
-                return True, 0, 100
-    return False, 0, 100
+                return True, 0, 100, []
+    return False, 0, 100, []
 
 def generate_double_graph(history_data, max_slots=100):
     fig, (ax24, ax30) = plt.subplots(2, 1, figsize=(8, 6), facecolor='#1e1f22')
@@ -163,7 +166,7 @@ async def update_status_message(bot: commands.Bot):
             except Exception as e:
                 print(f"❌ Канал мониторинга {MONITORING_CHANNEL_ID} не найден: {e}")
                 return
-        is_online, current_players, max_players = await check_mc_server()
+        is_online, current_players, max_players, player_names = await check_mc_server()
         print(f"🔄 Статус: {'онлайн' if is_online else 'офлайн'}, игроков: {current_players}/{max_players}")
         now_msk = datetime.now(MSK_TZ)
         time_str = now_msk.strftime("%H:%M")
@@ -177,6 +180,9 @@ async def update_status_message(bot: commands.Bot):
             embed.add_field(name="🟢 Статус", value="**Сервер онлайн!**", inline=False)
             embed.add_field(name="👥 Онлайн", value=f"`{current_players} / {max_players}`", inline=True)
             embed.add_field(name="⚡ Работающий адрес", value=f"`{main_public_domain}`", inline=True)
+            if player_names:
+                players_list = "\n".join([f"• {name}" for name in player_names])
+                embed.add_field(name="👤 Игроки онлайн", value=players_list, inline=False)
         else:
             embed = discord.Embed(title="🎮 Мониторинг Minecraft Сервера", color=0xe74c3c, timestamp=now_msk)
             embed.add_field(name="🔴 Статус", value="**Сервер недоступен или выключен.**", inline=False)
