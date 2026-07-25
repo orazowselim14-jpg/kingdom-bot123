@@ -6,6 +6,7 @@ import asyncio
 import random
 from datetime import datetime, timezone, timedelta
 import json
+import os
 import io
 import traceback
 from PIL import Image, ImageDraw, ImageFont
@@ -756,7 +757,7 @@ async def setup_applications(interaction: discord.Interaction):
     await channel.send(embed=embed, view=view)
     await interaction.followup.send("✅ Сообщение с заявками отправлено в канал!", ephemeral=True)
 
-# ==================== НОВЫЕ КОМАНДЫ ДЛЯ СООБЩЕНИЙ ====================
+# ==================== НОВЫЕ КОМАНДЫ ====================
 @app_commands.command(name="messages", description="📊 Показать количество сообщений и уровень")
 @app_commands.describe(user="Пользователь (оставьте пустым для себя)")
 async def messages(interaction: discord.Interaction, user: discord.Member = None):
@@ -809,7 +810,7 @@ async def top(interaction: discord.Interaction):
     embed.set_footer(text="Kingdom of Joy | Топ", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
     await interaction.response.send_message(embed=embed)
 
-# ==================== АДМИН-КОМАНДЫ ДЛЯ РУКОВОДСТВА (исправлены) ====================
+# ==================== АДМИН-КОМАНДЫ ====================
 @app_commands.command(name="setmessages", description="⚙️ Установить точное количество сообщений пользователю")
 @app_commands.describe(user="Пользователь", count="Новое количество")
 async def setmessages(interaction: discord.Interaction, user: discord.Member, count: int):
@@ -1538,7 +1539,6 @@ class KingdomBot(commands.Bot):
 
         # ========== ЗАЩИТА ОТ НЕВЕРИФИЦИРОВАННЫХ ==========
         if isinstance(message.channel, discord.TextChannel) and message.guild:
-            # Исключаем канал ботов, чтобы команды работали
             if message.channel.id != BOT_CHANNEL:
                 member = message.author
                 has_verify = any(r.id == VERIFY_ROLE_ID for r in member.roles)
