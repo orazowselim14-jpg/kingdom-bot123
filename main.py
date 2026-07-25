@@ -756,7 +756,7 @@ async def setup_applications(interaction: discord.Interaction):
     await channel.send(embed=embed, view=view)
     await interaction.followup.send("✅ Сообщение с заявками отправлено в канал!", ephemeral=True)
 
-# ==================== НОВЫЕ КОМАНДЫ ДЛЯ СООБЩЕНИЙ (исправлены) ====================
+# ==================== НОВЫЕ КОМАНДЫ ДЛЯ СООБЩЕНИЙ ====================
 @app_commands.command(name="messages", description="📊 Показать количество сообщений и уровень")
 @app_commands.describe(user="Пользователь (оставьте пустым для себя)")
 async def messages(interaction: discord.Interaction, user: discord.Member = None):
@@ -809,7 +809,7 @@ async def top(interaction: discord.Interaction):
     embed.set_footer(text="Kingdom of Joy | Топ", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
     await interaction.response.send_message(embed=embed)
 
-# ==================== АДМИН-КОМАНДЫ (исправлены) ====================
+# ==================== АДМИН-КОМАНДЫ ДЛЯ РУКОВОДСТВА (исправлены) ====================
 @app_commands.command(name="setmessages", description="⚙️ Установить точное количество сообщений пользователю")
 @app_commands.describe(user="Пользователь", count="Новое количество")
 async def setmessages(interaction: discord.Interaction, user: discord.Member, count: int):
@@ -923,8 +923,340 @@ async def send_cmd(interaction: discord.Interaction, text: str, color: str = Non
     await send_log(interaction.guild, "📨 Отправлено объявление", f"Руководство {interaction.user.mention} отправил объявление в канале {interaction.channel.mention}", color=embed_color)
 
 # ==================== UI КОМПОНЕНТЫ ====================
-# ... (остаются без изменений, я не буду переписывать всё, они уже есть в твоём коде)
-# Пожалуйста, вставь сюда все классы UI из твоего старого кода (WelcomeButtonsView, IdeaModal, IdeaVotingView, TicketCloseView, SupportHubView, ApplicationSelect, ApplicationModal, ApplicationVerdictView, ApplicationView, VerifyView). Я опускаю их для краткости, но они должны быть.
+class WelcomeButtonsView(discord.ui.View):
+    def __init__(self, guild_id: int = 0):
+        super().__init__(timeout=None)
+        g_id = guild_id if guild_id else '@me'
+        self.add_item(discord.ui.Button(
+            label="📢 Новости",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{g_id}/1505126425022300275",
+            row=0
+        ))
+        self.add_item(discord.ui.Button(
+            label="💬 Основной Чат",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{g_id}/1505239843486306374",
+            row=0
+        ))
+        self.add_item(discord.ui.Button(
+            label="🗺️ Навигация",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{g_id}/1520119059566559282",
+            row=0
+        ))
+
+class IdeaModal(discord.ui.Modal, title="💡 Подача предложения"):
+    idea_title = discord.ui.TextInput(label="Суть идеи", placeholder="Кратко изложи суть предложения...", max_length=100)
+    idea_desc = discord.ui.TextInput(label="Подробные детали", placeholder="Опиши детально, как это улучшит проект...", style=discord.TextStyle.paragraph, max_length=1000)
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        thread = await interaction.channel.create_thread(
+            name=f"💡-идея-{interaction.user.name}",
+            type=discord.ChannelType.private_thread,
+            invitable=False
+        )
+        await thread.add_user(interaction.user)
+        await interaction.followup.send(f"✨ Твоё предложение успешно отправлено в личный сектор: {thread.mention}", ephemeral=True)
+        embed = discord.Embed(title=f"💡 Идея от {interaction.user.display_name}", color=0x7864c8, timestamp=datetime.now(MSK))
+        embed.add_field(name="📌 Заголовок", value=self.idea_title.value, inline=False)
+        embed.add_field(name="📝 Детали предложения", value=self.idea_desc.value, inline=False)
+        embed.set_footer(text="Kingdom of Joy | Idea Center", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+        pings = f"<@&{CREATOR_ROLE_ID}> <@&{FOUNDER_ROLE_ID}>"
+        await thread.send(content=f"⚙️ Уведомление Высшему Совету: {pings}", embed=embed, view=IdeaVotingView(), allowed_mentions=discord.AllowedMentions(roles=True, users=True))
+        await send_log(interaction.guild, "💡 Создано Предложение", f"Пользователь {interaction.user.mention} предложил идею в ветке {thread.mention}", color=0x3498db, fields=[("Заголовок", self.idea_title.value, False)])
+
+class IdeaVotingView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.approvals, self.rejections = set(), set()
+    def is_management(self, user: discord.Member) -> bool:
+        return user.id == 1437779380184158249 or any(r.id in [CREATOR_ROLE_ID, FOUNDER_ROLE_ID] for r in user.roles)
+    @discord.ui.button(label="Принять", style=discord.ButtonStyle.success, emoji="✅", custom_id="idea_approve_btn")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_management(interaction.user):
+            await interaction.response.send_message("❌ Доступно только Руководству Kingdom of Joy.", ephemeral=True)
+            return
+        self.approvals.add(interaction.user.id)
+        await interaction.response.send_message("✅ Голос за принятие записан.", ephemeral=True)
+        if len(self.approvals) >= 2 or interaction.user.id == 1437779380184158249:
+            self.stop()
+            await interaction.channel.send(make_blockquote("🟢 **Вердикт Руководства:** Идея официально одобрена и принята в разработку!"))
+            await interaction.channel.edit(locked=True, archived=True)
+            await send_log(interaction.guild, "🟢 Идея Одобрена", f"Идея в канале {interaction.channel.mention} была официально принята.", color=0x2ecc71)
+    @discord.ui.button(label="Отказ", style=discord.ButtonStyle.danger, emoji="❌", custom_id="idea_reject_btn")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_management(interaction.user):
+            await interaction.response.send_message("❌ Доступно только Руководству Kingdom of Joy.", ephemeral=True)
+            return
+        self.rejections.add(interaction.user.id)
+        await interaction.response.send_message("❌ Голос за отклонение записан.", ephemeral=True)
+        if len(self.rejections) >= 2 or interaction.user.id == 1437779380184158249:
+            self.stop()
+            await interaction.channel.send(make_blockquote("🔴 **Вердикт Руководства:** Идея отклонена."))
+            await interaction.channel.edit(locked=True, archived=True)
+            await send_log(interaction.guild, "🔴 Идея Отклонена", f"Идея в канале {interaction.channel.mention} была отклонена.", color=0xe74c3c)
+
+class TicketCloseView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label="Запечатать тикет", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="ticket_close_btn")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("🔒 Сессия завершается... Канал будет запечатан.")
+        await send_log(interaction.guild, "🔒 Тикет Закрыт", f"Тикет {interaction.channel.mention} запечатан {interaction.user.mention}.", color=0x95a5a6)
+        await asyncio.sleep(2)
+        try:
+            await interaction.channel.edit(locked=True, archived=True)
+        except Exception:
+            pass
+
+class SupportHubView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    async def _create_private_ticket(self, interaction: discord.Interaction, prefix: str, title: str, desc: str, ping_roles: list, color: int):
+        await interaction.response.defer(ephemeral=True)
+        thread = await interaction.channel.create_thread(
+            name=f"{prefix}-{interaction.user.name}",
+            type=discord.ChannelType.private_thread,
+            invitable=False
+        )
+        await thread.add_user(interaction.user)
+        await interaction.followup.send(f"🔒 Личный сектор связи успешно создан: {thread.mention}", ephemeral=True)
+        role_pings = " ".join([f"<@&{rid}>" for rid in ping_roles])
+        embed = discord.Embed(
+            title=f"🛡️ {title}",
+            description=(
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Приветствуем тебя, {interaction.user.mention}!\n\n"
+                f"{desc}\n\n"
+                f"📌 **ПРАВИЛА И РЕКОМЕНДАЦИИ:**\n"
+                f"1. **Изложи суть:** Напиши проблему или вопрос одним полным сообщением.\n"
+                f"2. **Прикрепи доказательства:** Скриншоты, видео или логи (если есть).\n"
+                f"3. **Ожидай ответа:** Ответственные сотрудники уже уведомлены.\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=color,
+            timestamp=datetime.now(MSK)
+        )
+        embed.set_footer(text="Kingdom of Joy | Support Ticket", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+        await thread.send(
+            content=f"🚪 **Новое обращение!** Участник: {interaction.user.mention} | Доступ: {role_pings}",
+            embed=embed,
+            view=TicketCloseView(),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True)
+        )
+        await send_log(interaction.guild, "🎫 Открыт Новый Тикет", f"Пользователь {interaction.user.mention} создал обращение {thread.mention}", color=color, fields=[("Категория", prefix, True)])
+    @discord.ui.button(label="Жалоба", style=discord.ButtonStyle.danger, emoji="⚠️", custom_id="support_complaint_btn", row=0)
+    async def create_complaint(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._create_private_ticket(
+            interaction,
+            "⚠️-жалоба",
+            "Отдел Рассмотрения Правонарушений",
+            "Вы перешли в сектор подачи жалоб. Пожалуйста, опишите причину обращения, укажите никнейм нарушителя и прикрепите прямые доказательства.",
+            [CREATOR_ROLE_ID, FOUNDER_ROLE_ID, COMPLAINTS_DEPT_ROLE_ID],
+            0xd9534f
+        )
+    @discord.ui.button(label="Предложить Идею", style=discord.ButtonStyle.primary, emoji="💡", custom_id="support_idea_btn", row=0)
+    async def create_idea(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(IdeaModal())
+    @discord.ui.button(label="Поддержка / Донат", style=discord.ButtonStyle.success, emoji="💎", custom_id="support_donate_btn", row=0)
+    async def create_donation_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._create_private_ticket(
+            interaction,
+            "💎-донат",
+            "Поддержка и Развитие Проекта",
+            "Здесь вы можете обсудить финансовую поддержку сервера, покупку уникальных ролей, спонсорские привилегии и бонусы.",
+            [CREATOR_ROLE_ID, FOUNDER_ROLE_ID],
+            0x2ecc71
+        )
+    @discord.ui.button(label="Тех. Разработчик", style=discord.ButtonStyle.primary, emoji="💻", custom_id="support_dev_btn", row=1)
+    async def create_dev_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._create_private_ticket(
+            interaction,
+            "💻-разраб",
+            "Технический Раздел и Баги",
+            "Личная линия связи с Техническим Разработчиком. Сообщите о найденных багах, ошибках в ботах или проблемах с игровыми серверами.",
+            [CREATOR_ROLE_ID],
+            0x7864c8
+        )
+    @discord.ui.button(label="Высшее Руководство", style=discord.ButtonStyle.secondary, emoji="👑", custom_id="support_management_btn", row=1)
+    async def create_management_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._create_private_ticket(
+            interaction,
+            "👑-руководство",
+            "Приватный Сектор Высшего Совета",
+            "Прямой канал связи с Создателем и Основателями проекта для решения конфиденциальных, административных и важных вопросов.",
+            [1526681612337549343, FOUNDER_ROLE_ID],
+            0xf1c40f
+        )
+
+class ApplicationSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Маппер", description="Подать заявку на маппера", emoji="🗺️"),
+            discord.SelectOption(label="Модератор чата", description="Подать заявку на модератора", emoji="🛡️"),
+            discord.SelectOption(label="Киноклуб", description="Подать заявку в киноклуб", emoji="🎬"),
+            discord.SelectOption(label="Девушка", description="Получить статус девушки", emoji="👩")
+        ]
+        super().__init__(placeholder="Выберите тип заявки", options=options, custom_id="app_select")
+    async def callback(self, interaction: discord.Interaction):
+        modal = ApplicationModal(self.values[0])
+        await interaction.response.send_modal(modal)
+
+class ApplicationModal(discord.ui.Modal):
+    def __init__(self, app_type: str):
+        super().__init__(title=f"📝 Заявка на {app_type}")
+        self.app_type = app_type
+        if app_type == "Модератор чата":
+            self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
+            self.add_item(discord.ui.TextInput(label="Опыт (если есть)", placeholder="Расскажите о вашем опыте", style=discord.TextStyle.paragraph, max_length=500, required=False))
+            self.add_item(discord.ui.TextInput(label="По какой причине вы хотите стать модератором?", placeholder="Напишите мотивацию", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+        elif app_type == "Маппер":
+            self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
+            self.add_item(discord.ui.TextInput(label="Опыт мапперства (как можно подробнее)", placeholder="Опишите ваш опыт", style=discord.TextStyle.paragraph, max_length=500, required=False))
+            self.add_item(discord.ui.TextInput(label="Ваша специализация", placeholder="Например: строительство, редстоун, ландшафт...", max_length=100, required=True))
+        elif app_type == "Киноклуб":
+            self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
+            self.add_item(discord.ui.TextInput(label="Как долго вы находитесь на сервере?", placeholder="Например: 2 месяца", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="По какой причине вы хотите попасть в киноклуб?", placeholder="Напишите мотивацию", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+        elif app_type == "Девушка":
+            self.add_item(discord.ui.TextInput(label="Как вас зовут?", placeholder="Ваше имя", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Сколько вам лет?", placeholder="Возраст", max_length=3, required=True))
+            self.add_item(discord.ui.TextInput(label="Расскажите о себе", placeholder="Немного о себе...", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        answers = [child.value for child in self.children]
+        role_map = {
+            "Маппер": ROLE_MAPPER,
+            "Модератор чата": ROLE_MODERATOR,
+            "Киноклуб": ROLE_CINEMA,
+            "Девушка": ROLE_GIRL
+        }
+        target_role_id = role_map.get(self.app_type)
+        if not target_role_id:
+            await interaction.followup.send("❌ Ошибка: неизвестный тип заявки.", ephemeral=True)
+            return
+        channel = interaction.client.get_channel(APPLICATIONS_CHANNEL_ID)
+        if not channel:
+            await interaction.followup.send("❌ Канал заявок не найден.", ephemeral=True)
+            return
+        thread_name = f"📩-{self.app_type}-{interaction.user.name}"
+        thread = await channel.create_thread(name=thread_name, type=discord.ChannelType.private_thread, invitable=False)
+        await thread.add_user(interaction.user)
+        for role_id in HIGHER_ROLES:
+            role = interaction.guild.get_role(role_id)
+            if role:
+                try:
+                    await thread.send(content=f"<@&{role_id}>", allowed_mentions=discord.AllowedMentions(roles=True))
+                except:
+                    pass
+
+        embed = discord.Embed(title=f"📋 Заявка на {self.app_type}", color=0x5865F2, timestamp=datetime.now(MSK))
+        embed.add_field(name="👤 Игрок", value=interaction.user.mention, inline=False)
+
+        if self.app_type == "Модератор чата":
+            embed.add_field(name="📛 Никнейм", value=answers[0], inline=True)
+            embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
+            embed.add_field(name="📜 Опыт", value=answers[2] or "Не указан", inline=False)
+            embed.add_field(name="💬 Причина", value=answers[3], inline=False)
+        elif self.app_type == "Маппер":
+            embed.add_field(name="📛 Никнейм", value=answers[0], inline=True)
+            embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
+            embed.add_field(name="📜 Опыт мапперства", value=answers[2] or "Не указан", inline=False)
+            embed.add_field(name="🔧 Специализация", value=answers[3], inline=False)
+        elif self.app_type == "Киноклуб":
+            embed.add_field(name="📛 Никнейм", value=answers[0], inline=True)
+            embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
+            embed.add_field(name="⏳ Время на сервере", value=answers[2], inline=False)
+            embed.add_field(name="💬 Причина", value=answers[3], inline=False)
+        elif self.app_type == "Девушка":
+            embed.add_field(name="👩 Имя", value=answers[0], inline=True)
+            embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
+            embed.add_field(name="📝 О себе", value=answers[2], inline=False)
+
+        embed.set_footer(text=f"ID заявки: {thread.id}")
+        view = ApplicationVerdictView(interaction.user.id, target_role_id, self.app_type)
+        await thread.send(content=f"🔔 **Новая заявка от {interaction.user.mention}**", embed=embed, view=view)
+        await interaction.followup.send(f"✅ Ваша заявка отправлена! Ожидайте решения в ветке {thread.mention}", ephemeral=True)
+        await send_log(interaction.guild, "📩 Создана заявка", f"Пользователь {interaction.user.mention} подал заявку на {self.app_type} (ветка {thread.mention})", color=0x3498db)
+
+class ApplicationVerdictView(discord.ui.View):
+    def __init__(self, applicant_id: int, role_id: int, app_type: str):
+        super().__init__(timeout=None)
+        self.applicant_id = applicant_id
+        self.role_id = role_id
+        self.app_type = app_type
+    @discord.ui.button(label="✅ Принять", style=discord.ButtonStyle.success, custom_id="app_accept")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
+            await interaction.response.send_message("❌ У вас нет прав для принятия заявок.", ephemeral=True)
+            return
+        guild = interaction.guild
+        member = guild.get_member(self.applicant_id)
+        if not member:
+            await interaction.response.send_message("❌ Пользователь не найден на сервере.", ephemeral=True)
+            return
+        role = guild.get_role(self.role_id)
+        if not role:
+            await interaction.response.send_message("❌ Роль для выдачи не найдена.", ephemeral=True)
+            return
+        try:
+            await member.add_roles(role)
+            await interaction.response.send_message(f"✅ Заявка принята! Пользователю {member.mention} выдана роль {role.mention}.")
+            await send_log(guild, "✅ Заявка принята", f"Пользователь {member.mention} получил роль {role.mention} (заявка на {self.app_type})", color=0x2ecc71)
+            await interaction.channel.edit(locked=True, archived=True)
+            await interaction.channel.send(f"🎉 Заявка принята! {member.mention}, поздравляем!")
+            await interaction.message.edit(view=None)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+    @discord.ui.button(label="❌ Отказать", style=discord.ButtonStyle.danger, custom_id="app_reject")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
+            await interaction.response.send_message("❌ У вас нет прав для отклонения заявок.", ephemeral=True)
+            return
+        await interaction.response.send_message("❌ Заявка отклонена. Ветка будет заархивирована.")
+        await interaction.channel.send("🔴 **Заявка отклонена.** Спасибо за проявленный интерес.")
+        await interaction.channel.edit(locked=True, archived=True)
+        await interaction.message.edit(view=None)
+        await send_log(interaction.guild, "❌ Заявка отклонена", f"Заявка на {self.app_type} от пользователя <@{self.applicant_id}> отклонена.", color=0xe74c3c)
+
+class ApplicationView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ApplicationSelect())
+
+class VerifyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label="✅ Верифицироваться", style=discord.ButtonStyle.success, custom_id="verify_btn")
+    async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        unverified_role = interaction.guild.get_role(UNVERIFIED_ROLE_ID)
+        verified_role = interaction.guild.get_role(VERIFY_ROLE_ID)
+        if not unverified_role or not verified_role:
+            await interaction.response.send_message("❌ Ошибка конфигурации ролей. Обратитесь к администрации.", ephemeral=True)
+            return
+        if verified_role in interaction.user.roles:
+            await interaction.response.send_message("✅ Вы уже верифицированы!", ephemeral=True)
+            return
+        if unverified_role not in interaction.user.roles:
+            try:
+                await interaction.user.add_roles(verified_role)
+                await interaction.response.send_message(f"✅ Вам выдана роль {verified_role.mention}. Добро пожаловать!", ephemeral=True)
+                await send_log(interaction.guild, "✅ Верификация", f"Пользователь {interaction.user.mention} получил роль участника (был без неверифицированной роли).", color=0x2ecc71)
+            except Exception as e:
+                await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+            return
+        try:
+            await interaction.user.remove_roles(unverified_role)
+            await interaction.user.add_roles(verified_role)
+            await interaction.response.send_message(f"✅ Поздравляю! Вы успешно верифицированы. Теперь вам доступны все каналы сервера.", ephemeral=True)
+            await send_log(interaction.guild, "✅ Верификация", f"Пользователь {interaction.user.mention} успешно верифицирован.", color=0x2ecc71)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Ошибка при верификации: {e}", ephemeral=True)
 
 # ==================== КЛАСС БОТА ====================
 class KingdomBot(commands.Bot):
@@ -1204,9 +1536,9 @@ class KingdomBot(commands.Bot):
         if message.author == self.user:
             return
 
-        # ========== ЗАЩИТА ОТ НЕВЕРИФИЦИРОВАННЫХ (с исключением канала ботов) ==========
+        # ========== ЗАЩИТА ОТ НЕВЕРИФИЦИРОВАННЫХ ==========
         if isinstance(message.channel, discord.TextChannel) and message.guild:
-            # Если это канал ботов – пропускаем проверку (чтобы не удалять ответы на команды)
+            # Исключаем канал ботов, чтобы команды работали
             if message.channel.id != BOT_CHANNEL:
                 member = message.author
                 has_verify = any(r.id == VERIFY_ROLE_ID for r in member.roles)
