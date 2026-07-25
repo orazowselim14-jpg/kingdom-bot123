@@ -55,11 +55,12 @@ CUSTOM_REACTIONS = [
 ]
 CROWN_EMOJI = discord.PartialEmoji(name="crown", id=1506904987845001236)
 
-# ==================== НОВЫЕ КОНСТАНТЫ ДЛЯ СООБЩЕНИЙ ====================
-ROLE_500 = 1505457763894165595
-ROLE_1000 = 1505479667954487398
-ROLE_3000 = 1530587772132528353
-ROLE_10000 = 1505480198580080650
+# ==================== КОНСТАНТЫ УРОВНЕЙ ====================
+ROLE_1 = 1505457314751320064            # Уровень 1
+ROLE_5 = 1505457763894165595             # Уровень 5 (500 сообщений)
+ROLE_10 = 1505479667954487398            # Уровень 10 (1000 сообщений)
+ROLE_15 = 1530587772132528353            # Уровень 15 (3000 сообщений)
+ROLE_20 = 1505480198580080650            # Уровень 20 (10000 сообщений)
 
 COUNT_CHANNELS = [
     1505239843486306374,
@@ -93,6 +94,15 @@ LEVEL_THRESHOLDS = {
     20: 10000
 }
 
+# Соответствие уровня и роли
+LEVEL_ROLE_MAP = {
+    1: ROLE_1,
+    5: ROLE_5,
+    10: ROLE_10,
+    15: ROLE_15,
+    20: ROLE_20
+}
+
 MESSAGE_COUNTS_FILE = "message_counts.json"
 
 def get_level(count: int) -> int:
@@ -101,6 +111,10 @@ def get_level(count: int) -> int:
         if count >= threshold:
             lvl = level
     return lvl
+
+def get_role_for_level(level: int) -> int:
+    # Возвращает ID роли для уровня, если она есть, иначе None
+    return LEVEL_ROLE_MAP.get(level)
 
 # ==================== JSON-ФУНКЦИИ ====================
 def load_json(filepath, default):
@@ -312,25 +326,45 @@ def format_time(seconds: int) -> str:
     else:
         return f"{secs}с"
 
-# ==================== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ВЫДАЧИ РОЛЕЙ ====================
-async def check_and_assign_roles(member: discord.Member, count: int):
-    guild = member.guild
-    if not guild:
+# ==================== ОСНОВНАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ УРОВНЯ ====================
+async def update_user_level(bot: commands.Bot, member: discord.Member, new_count: int, channel: discord.TextChannel = None):
+    """Обновляет уровень пользователя, выдаёт/снимает роли, отправляет поздравление."""
+    new_level = get_level(new_count)
+    # Получаем старый уровень из кеша
+    old_level = bot.user_level_cache.get(member.id, 1)
+    if new_level == old_level:
         return
 
-    role_500 = guild.get_role(ROLE_500)
-    role_1000 = guild.get_role(ROLE_1000)
-    role_3000 = guild.get_role(ROLE_3000)
-    role_10000 = guild.get_role(ROLE_10000)
+    # Снимаем старую роль уровня (если она есть)
+    old_role_id = get_role_for_level(old_level)
+    if old_role_id:
+        old_role = member.guild.get_role(old_role_id)
+        if old_role and old_role in member.roles:
+            await member.remove_roles(old_role, reason=f"Уровень повысился до {new_level}")
 
-    if count >= 10000 and role_10000 and role_10000 not in member.roles:
-        await member.add_roles(role_10000, reason="Достигнуто 10000 сообщений")
-    elif count >= 3000 and role_3000 and role_3000 not in member.roles:
-        await member.add_roles(role_3000, reason="Достигнуто 3000 сообщений")
-    elif count >= 1000 and role_1000 and role_1000 not in member.roles:
-        await member.add_roles(role_1000, reason="Достигнуто 1000 сообщений")
-    elif count >= 500 and role_500 and role_500 not in member.roles:
-        await member.add_roles(role_500, reason="Достигнуто 500 сообщений")
+    # Выдаём новую роль уровня (если она есть)
+    new_role_id = get_role_for_level(new_level)
+    if new_role_id:
+        new_role = member.guild.get_role(new_role_id)
+        if new_role and new_role not in member.roles:
+            await member.add_roles(new_role, reason=f"Достигнут уровень {new_level}")
+
+    # Обновляем кеш
+    bot.user_level_cache[member.id] = new_level
+
+    # Если уровень повысился и есть канал для поздравления
+    if new_level > old_level and channel:
+        try:
+            await channel.send(
+                make_blockquote(
+                    f"🎉 **Поздравляю, {member.mention}!**\n"
+                    f"Ты достиг **{new_level} уровня**!\n"
+                    f"📊 Сообщений: `{new_count}`\n"
+                    f"🏆 Новый уровень: `{new_level}` из 20"
+                )
+            )
+        except Exception as e:
+            print(f"Ошибка отправки поздравления: {e}")
 
 # ==================== СЛЭШ-КОМАНДЫ ====================
 @app_commands.command(name="lk", description="📊 Показать личный кабинет (свой или другого игрока)")
@@ -827,7 +861,8 @@ async def setmessages(interaction: discord.Interaction, user: discord.Member, co
         counts[str(user.id)] = count
         save_message_counts(counts)
 
-        await check_and_assign_roles(user, count)
+        # Обновляем уровень
+        await update_user_level(interaction.client, user, count, interaction.channel)
 
         await interaction.followup.send(f"✅ Пользователю {user.mention} установлено `{count}` сообщений.", ephemeral=True)
         await send_log(interaction.guild, "⚙️ Установлено сообщений", f"Руководство {interaction.user.mention} установило {user.mention} сообщений = {count}", color=0x3498db)
@@ -852,7 +887,8 @@ async def addmessages(interaction: discord.Interaction, user: discord.Member, am
         counts[str(user.id)] = new_count
         save_message_counts(counts)
 
-        await check_and_assign_roles(user, new_count)
+        # Обновляем уровень
+        await update_user_level(interaction.client, user, new_count, interaction.channel)
 
         await interaction.followup.send(f"✅ Пользователю {user.mention} добавлено `{amount}` сообщений. Теперь: `{new_count}`.", ephemeral=True)
         await send_log(interaction.guild, "➕ Добавлены сообщения", f"Руководство {interaction.user.mention} добавил {user.mention} +{amount} сообщений (теперь {new_count})", color=0x2ecc71)
@@ -880,20 +916,26 @@ async def resetmessages(interaction: discord.Interaction):
 
         counts = load_message_counts()
         guild = interaction.guild
+        role_1 = guild.get_role(ROLE_1)
+        role_5 = guild.get_role(ROLE_5)
+        role_10 = guild.get_role(ROLE_10)
+        role_15 = guild.get_role(ROLE_15)
+        role_20 = guild.get_role(ROLE_20)
+
         for user_id in list(counts.keys()):
             member = guild.get_member(int(user_id))
             if member and VERIFY_ROLE_ID in [r.id for r in member.roles]:
                 counts[user_id] = 0
-                await member.remove_roles(
-                    guild.get_role(ROLE_500),
-                    guild.get_role(ROLE_1000),
-                    guild.get_role(ROLE_3000),
-                    guild.get_role(ROLE_10000),
-                    reason="Обнуление счётчика сообщений"
-                )
+                # Снимаем все роли уровней
+                await member.remove_roles(role_1, role_5, role_10, role_15, role_20, reason="Обнуление счётчика сообщений")
+                # Выдаём роль 1 уровня
+                if role_1:
+                    await member.add_roles(role_1, reason="Обнуление счётчика сообщений (уровень 1)")
+                # Обновляем кеш уровня
+                interaction.client.user_level_cache[member.id] = 1
         save_message_counts(counts)
 
-        await interaction.followup.send("✅ Счётчики всех авторизованных пользователей обнулены, роли за сообщения сняты.", ephemeral=True)
+        await interaction.followup.send("✅ Счётчики всех авторизованных пользователей обнулены, выдана роль 1 уровня.", ephemeral=True)
         await send_log(interaction.guild, "🔄 Обнуление счётчиков", f"Руководство {interaction.user.mention} обнулило счётчики всех авторизованных.", color=0xe67e22)
     except Exception as e:
         await interaction.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
@@ -1237,25 +1279,25 @@ class VerifyView(discord.ui.View):
     async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
         unverified_role = interaction.guild.get_role(UNVERIFIED_ROLE_ID)
         verified_role = interaction.guild.get_role(VERIFY_ROLE_ID)
-        if not unverified_role or not verified_role:
+        role_1 = interaction.guild.get_role(ROLE_1)
+        if not unverified_role or not verified_role or not role_1:
             await interaction.response.send_message("❌ Ошибка конфигурации ролей. Обратитесь к администрации.", ephemeral=True)
             return
         if verified_role in interaction.user.roles:
             await interaction.response.send_message("✅ Вы уже верифицированы!", ephemeral=True)
             return
-        if unverified_role not in interaction.user.roles:
-            try:
-                await interaction.user.add_roles(verified_role)
-                await interaction.response.send_message(f"✅ Вам выдана роль {verified_role.mention}. Добро пожаловать!", ephemeral=True)
-                await send_log(interaction.guild, "✅ Верификация", f"Пользователь {interaction.user.mention} получил роль участника (был без неверифицированной роли).", color=0x2ecc71)
-            except Exception as e:
-                await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
-            return
+
+        # Если у пользователя нет роли участника, выдаём всё
         try:
-            await interaction.user.remove_roles(unverified_role)
-            await interaction.user.add_roles(verified_role)
-            await interaction.response.send_message(f"✅ Поздравляю! Вы успешно верифицированы. Теперь вам доступны все каналы сервера.", ephemeral=True)
-            await send_log(interaction.guild, "✅ Верификация", f"Пользователь {interaction.user.mention} успешно верифицирован.", color=0x2ecc71)
+            # Снимаем неверифицированную роль
+            if unverified_role in interaction.user.roles:
+                await interaction.user.remove_roles(unverified_role)
+            # Выдаём роль участника и роль 1 уровня
+            await interaction.user.add_roles(verified_role, role_1)
+            # Обновляем кеш уровня
+            interaction.client.user_level_cache[interaction.user.id] = 1
+            await interaction.response.send_message(f"✅ Поздравляю! Вы успешно верифицированы. Вам выдана роль {verified_role.mention} и роль 1 уровня.", ephemeral=True)
+            await send_log(interaction.guild, "✅ Верификация", f"Пользователь {interaction.user.mention} успешно верифицирован, выдана роль 1 уровня.", color=0x2ecc71)
         except Exception as e:
             await interaction.response.send_message(f"❌ Ошибка при верификации: {e}", ephemeral=True)
 
@@ -1271,6 +1313,7 @@ class KingdomBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents, allowed_mentions=allowed_mentions)
         self.reacted_messages = set()
         self.user_badword_counts = {}
+        self.user_level_cache = {}  # Кеш уровней пользователей {user_id: level}
 
     async def setup_hook(self):
         self.tree.add_command(lk)
@@ -1550,7 +1593,7 @@ class KingdomBot(commands.Bot):
                         pass
                     return
 
-        # ========== ПОДСЧЁТ СООБЩЕНИЙ ==========
+        # ========== ПОДСЧЁТ СООБЩЕНИЙ И ОБНОВЛЕНИЕ УРОВНЯ ==========
         if isinstance(message.channel, discord.TextChannel) and message.channel.id in COUNT_CHANNELS:
             if not message.author.bot:
                 counts = load_message_counts()
@@ -1558,7 +1601,8 @@ class KingdomBot(commands.Bot):
                 new_count = counts.get(user_id, 0) + 1
                 counts[user_id] = new_count
                 save_message_counts(counts)
-                await check_and_assign_roles(message.author, new_count)
+                # Обновляем уровень пользователя
+                await update_user_level(self, message.author, new_count, message.channel)
 
         # ========== ОСТАЛЬНАЯ ОБРАБОТКА ==========
         lowered_content = message.content.lower().strip()
