@@ -1,7 +1,7 @@
 import discord
 from discord.ext import tasks, commands
 from discord import app_commands
-import os
+from config import TOKEN, SFTP_HOST, SFTP_PORT, SFTP_USER, SFTP_PASSWORD, SFTP_REMOTE_PATH
 import asyncio
 import random
 from datetime import datetime, timezone, timedelta
@@ -15,14 +15,6 @@ import yaml
 import paramiko
 import time
 
-# ==================== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ====================
-TOKEN = os.getenv("TOKEN")
-SFTP_HOST = os.getenv("SFTP_HOST")
-SFTP_PORT = int(os.getenv("SFTP_PORT", 7477))
-SFTP_USER = os.getenv("SFTP_USER")
-SFTP_PASSWORD = os.getenv("SFTP_PASSWORD")
-SFTP_REMOTE_PATH = os.getenv("SFTP_REMOTE_PATH")
-
 # ==================== КОНСТАНТЫ ====================
 LK_CHANNEL_ID = 1529937315890204836
 VERIFY_CHANNEL_ID = 1529538303559205047
@@ -33,6 +25,7 @@ APPLICATIONS_CHANNEL_ID = 1530237443767533748
 ROLE_MAPPER = 1525487051544203395
 ROLE_MODERATOR = 1505275521825771520
 ROLE_CINEMA = 1505250838053126345
+ROLE_GIRL = 1505251541039321290  # роль для девушки
 HIGHER_ROLES = [1526681612337549343, 1505438802653741096, 1530235500886102216, 1505235504826814535]
 MSK = timezone(timedelta(hours=3))
 WARNS_FILE = "warns.json"
@@ -672,7 +665,8 @@ async def setup_applications(interaction: discord.Interaction):
             "Здесь вы можете подать заявку на одну из следующих должностей:\n\n"
             "🗺️ **Маппер** – создание карт и уровней.\n"
             "🛡️ **Модератор чата** – поддержание порядка в общем чате.\n"
-            "🎬 **Киноклуб** – организация совместных просмотров фильмов.\n\n"
+            "🎬 **Киноклуб** – организация совместных просмотров фильмов.\n"
+            "👩 **Девушка** – получение специального статуса.\n\n"
             "📌 **Инструкция:**\n"
             "1. Выберите тип заявки в меню ниже.\n"
             "2. Заполните анкету (все поля обязательны).\n"
@@ -859,30 +853,49 @@ class SupportHubView(discord.ui.View):
 class ApplicationSelect(discord.ui.Select):
     def __init__(self):
         options = [
-            discord.SelectOption(label="Маппер", description="Подать заявку на должность маппера", emoji="🗺️"),
-            discord.SelectOption(label="Модератор чата", description="Подать заявку на модератора чата", emoji="🛡️"),
-            discord.SelectOption(label="Киноклуб", description="Подать заявку на участие в киноклубе", emoji="🎬")
+            discord.SelectOption(label="Маппер", description="Подать заявку на маппера", emoji="🗺️"),
+            discord.SelectOption(label="Модератор чата", description="Подать заявку на модератора", emoji="🛡️"),
+            discord.SelectOption(label="Киноклуб", description="Подать заявку в киноклуб", emoji="🎬"),
+            discord.SelectOption(label="Девушка", description="Получить статус девушки", emoji="👩")
         ]
         super().__init__(placeholder="Выберите тип заявки", options=options, custom_id="app_select")
     async def callback(self, interaction: discord.Interaction):
         modal = ApplicationModal(self.values[0])
         await interaction.response.send_modal(modal)
 
-class ApplicationModal(discord.ui.Modal, title="📝 Заявка"):
+class ApplicationModal(discord.ui.Modal):
     def __init__(self, app_type: str):
-        super().__init__()
+        super().__init__(title=f"📝 Заявка на {app_type}")
         self.app_type = app_type
-        self.add_item(discord.ui.TextInput(label="Ваше имя (игровой ник)", placeholder="Напишите ваш никнейм", max_length=50, required=True))
-        self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
-        self.add_item(discord.ui.TextInput(label="Опыт (если есть)", placeholder="Расскажите о вашем опыте", style=discord.TextStyle.paragraph, max_length=500, required=False))
-        self.add_item(discord.ui.TextInput(label="Почему вы хотите стать маппером/модератором?", placeholder="Напишите мотивацию", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+        if app_type == "Модератор чата":
+            self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
+            self.add_item(discord.ui.TextInput(label="Опыт (если есть)", placeholder="Расскажите о вашем опыте", style=discord.TextStyle.paragraph, max_length=500, required=False))
+            self.add_item(discord.ui.TextInput(label="По какой причине вы хотите стать модератором?", placeholder="Напишите мотивацию", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+        elif app_type == "Маппер":
+            self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
+            self.add_item(discord.ui.TextInput(label="Опыт мапперства (как можно подробнее)", placeholder="Опишите ваш опыт", style=discord.TextStyle.paragraph, max_length=500, required=False))
+            self.add_item(discord.ui.TextInput(label="Ваша специализация", placeholder="Например: строительство, редстоун, ландшафт...", max_length=100, required=True))
+        elif app_type == "Киноклуб":
+            self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
+            self.add_item(discord.ui.TextInput(label="Как долго вы находитесь на сервере?", placeholder="Например: 2 месяца", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="По какой причине вы хотите попасть в киноклуб?", placeholder="Напишите мотивацию", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+        elif app_type == "Девушка":
+            self.add_item(discord.ui.TextInput(label="Как вас зовут?", placeholder="Ваше имя", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Сколько вам лет?", placeholder="Возраст", max_length=3, required=True))
+            self.add_item(discord.ui.TextInput(label="Расскажите о себе", placeholder="Немного о себе...", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        name = self.children[0].value
-        age = self.children[1].value
-        experience = self.children[2].value or "Не указан"
-        reason = self.children[3].value
-        role_map = {"Маппер": ROLE_MAPPER, "Модератор чата": ROLE_MODERATOR, "Киноклуб": ROLE_CINEMA}
+        answers = [child.value for child in self.children]
+        role_map = {
+            "Маппер": ROLE_MAPPER,
+            "Модератор чата": ROLE_MODERATOR,
+            "Киноклуб": ROLE_CINEMA,
+            "Девушка": ROLE_GIRL
+        }
         target_role_id = role_map.get(self.app_type)
         if not target_role_id:
             await interaction.followup.send("❌ Ошибка: неизвестный тип заявки.", ephemeral=True)
@@ -901,12 +914,30 @@ class ApplicationModal(discord.ui.Modal, title="📝 Заявка"):
                     await thread.send(content=f"<@&{role_id}>", allowed_mentions=discord.AllowedMentions(roles=True))
                 except:
                     pass
+
         embed = discord.Embed(title=f"📋 Заявка на {self.app_type}", color=0x5865F2, timestamp=datetime.now(MSK))
         embed.add_field(name="👤 Игрок", value=interaction.user.mention, inline=False)
-        embed.add_field(name="📛 Имя", value=name, inline=True)
-        embed.add_field(name="🎂 Возраст", value=age, inline=True)
-        embed.add_field(name="📜 Опыт", value=experience, inline=False)
-        embed.add_field(name="💬 Мотивация", value=reason[:1024], inline=False)
+
+        if self.app_type == "Модератор чата":
+            embed.add_field(name="📛 Никнейм", value=answers[0], inline=True)
+            embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
+            embed.add_field(name="📜 Опыт", value=answers[2] or "Не указан", inline=False)
+            embed.add_field(name="💬 Причина", value=answers[3], inline=False)
+        elif self.app_type == "Маппер":
+            embed.add_field(name="📛 Никнейм", value=answers[0], inline=True)
+            embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
+            embed.add_field(name="📜 Опыт мапперства", value=answers[2] or "Не указан", inline=False)
+            embed.add_field(name="🔧 Специализация", value=answers[3], inline=False)
+        elif self.app_type == "Киноклуб":
+            embed.add_field(name="📛 Никнейм", value=answers[0], inline=True)
+            embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
+            embed.add_field(name="⏳ Время на сервере", value=answers[2], inline=False)
+            embed.add_field(name="💬 Причина", value=answers[3], inline=False)
+        elif self.app_type == "Девушка":
+            embed.add_field(name="👩 Имя", value=answers[0], inline=True)
+            embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
+            embed.add_field(name="📝 О себе", value=answers[2], inline=False)
+
         embed.set_footer(text=f"ID заявки: {thread.id}")
         view = ApplicationVerdictView(interaction.user.id, target_role_id, self.app_type)
         await thread.send(content=f"🔔 **Новая заявка от {interaction.user.mention}**", embed=embed, view=view)
@@ -990,7 +1021,6 @@ class VerifyView(discord.ui.View):
 # ==================== КЛАСС БОТА ====================
 class KingdomBot(commands.Bot):
     def __init__(self):
-        # Оптимизированные интенты
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True
@@ -1106,7 +1136,7 @@ class KingdomBot(commands.Bot):
         status = random.choice(statuses)
         await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=status))
 
-    @tasks.loop(minutes=2)  # оптимизация: реже
+    @tasks.loop(minutes=2)
     async def reminder_check(self):
         reminders = load_json(REMINDERS_FILE, [])
         now = datetime.now(MSK).timestamp()
