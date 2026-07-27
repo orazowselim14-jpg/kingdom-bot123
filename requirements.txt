@@ -5,4 +5,4 @@ mcstatus
 paramiko
 pyyaml
 aiohttp
-cTz0K3qM2Q
+mcrcon
