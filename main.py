@@ -946,6 +946,336 @@ async def send_cmd(interaction: discord.Interaction, text: str, color: str = Non
     await interaction.response.send_message(embed=embed)
     await send_log(interaction.guild, "📨 Отправлено объявление", f"Руководство {interaction.user.mention} отправил объявление в канале {interaction.channel.mention}", color=embed_color)
 
+# ==================== КОМАНДЫ УПРАВЛЕНИЯ ИГРОВЫМИ ДАННЫМИ (из minecraft_admin) ====================
+
+@app_commands.command(name="addgroup", description="👑 Выдать группу игроку")
+@app_commands.describe(nickname="Ник игрока", group="Название группы", duration="Время (1d, 2h, 30m, 10s) или оставьте пустым для бессрочной")
+async def addgroup(interaction: discord.Interaction, nickname: str, group: str, duration: str = None):
+    if interaction.channel.id != LK_CHANNEL_ID:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
+        return
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    users_data = await get_users_yml_sftp()
+    if not users_data or "players" not in users_data:
+        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
+        return
+    found = await interaction.client.find_player_by_nick(nickname, users_data)
+    if not found:
+        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
+        return
+    uuid, data = found
+    groups = data.get("groups", [])
+    for g in groups:
+        if g.get("name") == group:
+            await interaction.followup.send(f"❌ У игрока уже есть группа `{group}`. Сначала удалите её.")
+            return
+    expire = -1
+    duration_str = "бессрочно"
+    if duration:
+        seconds = int(parse_duration(duration).total_seconds())
+        if seconds <= 0:
+            await interaction.followup.send("❌ Неверный формат времени. Используйте: 1d, 2h, 30m, 10s")
+            return
+        expire = int((datetime.now(MSK) + timedelta(seconds=seconds)).timestamp() * 1000)
+        duration_str = duration
+    groups.append({"name": group, "expire": expire})
+    users_data["players"][uuid]["groups"] = groups
+    if await put_users_yml_sftp(users_data):
+        await interaction.followup.send(f"✅ Группа `{group}` выдана игроку **{nickname}** (срок: {duration_str})")
+        await send_log(interaction.guild, "👑 Выдана группа", f"Руководство {interaction.user.mention} выдал группу `{group}` игроку **{nickname}** (срок: {duration_str})", color=0xf1c40f)
+    else:
+        await interaction.followup.send("❌ Ошибка сохранения данных.")
+
+@app_commands.command(name="removegroup", description="🗑️ Удалить группу у игрока")
+@app_commands.describe(nickname="Ник игрока", group="Название группы")
+async def removegroup(interaction: discord.Interaction, nickname: str, group: str):
+    if interaction.channel.id != LK_CHANNEL_ID:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
+        return
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    users_data = await get_users_yml_sftp()
+    if not users_data or "players" not in users_data:
+        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
+        return
+    found = await interaction.client.find_player_by_nick(nickname, users_data)
+    if not found:
+        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
+        return
+    uuid, data = found
+    groups = data.get("groups", [])
+    original_len = len(groups)
+    groups = [g for g in groups if g.get("name") != group]
+    if len(groups) == original_len:
+        await interaction.followup.send(f"❌ У игрока нет группы `{group}`.")
+        return
+    users_data["players"][uuid]["groups"] = groups
+    if await put_users_yml_sftp(users_data):
+        await interaction.followup.send(f"✅ Группа `{group}` удалена у игрока **{nickname}**")
+        await send_log(interaction.guild, "🗑️ Удалена группа", f"Руководство {interaction.user.mention} удалил группу `{group}` у игрока **{nickname}**", color=0xe74c3c)
+    else:
+        await interaction.followup.send("❌ Ошибка сохранения данных.")
+
+@app_commands.command(name="listgroups", description="📋 Показать все группы игрока")
+@app_commands.describe(nickname="Ник игрока")
+async def listgroups(interaction: discord.Interaction, nickname: str):
+    if interaction.channel.id != LK_CHANNEL_ID:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
+        return
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    users_data = await get_users_yml_sftp()
+    if not users_data or "players" not in users_data:
+        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
+        return
+    found = await interaction.client.find_player_by_nick(nickname, users_data)
+    if not found:
+        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
+        return
+    uuid, data = found
+    groups = data.get("groups", [])
+    if not groups:
+        await interaction.followup.send(f"У игрока **{nickname}** нет групп.")
+        return
+    lines = []
+    for g in groups:
+        gname = g.get("name", "unknown")
+        expire = g.get("expire", -1)
+        if expire == -1:
+            lines.append(f"• {gname} (бессрочно)")
+        else:
+            remaining = (expire // 1000) - int(datetime.now(MSK).timestamp())
+            if remaining > 0:
+                lines.append(f"• {gname} (осталось {format_time(remaining)})")
+            else:
+                lines.append(f"• {gname} (истекла)")
+    embed = discord.Embed(
+        title=f"📋 Группы игрока {nickname}",
+        description="\n".join(lines),
+        color=0x5865F2,
+        timestamp=datetime.now(MSK)
+    )
+    await interaction.followup.send(embed=embed)
+
+@app_commands.command(name="setbalance", description="💰 Установить баланс игроку")
+@app_commands.describe(nickname="Ник игрока", amount="Сумма")
+async def setbalance(interaction: discord.Interaction, nickname: str, amount: float):
+    if interaction.channel.id != LK_CHANNEL_ID:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
+        return
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+    if amount < 0:
+        await interaction.response.send_message("❌ Сумма не может быть отрицательной.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    users_data = await get_users_yml_sftp()
+    if not users_data or "players" not in users_data:
+        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
+        return
+    found = await interaction.client.find_player_by_nick(nickname, users_data)
+    if not found:
+        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
+        return
+    uuid, data = found
+    users_data["players"][uuid]["balance"] = amount
+    if await put_users_yml_sftp(users_data):
+        await interaction.followup.send(f"✅ Баланс игрока **{nickname}** установлен на `{amount:.2f}` монет")
+        await send_log(interaction.guild, "💰 Установлен баланс", f"Руководство {interaction.user.mention} установил баланс игрока **{nickname}** = {amount:.2f}", color=0x2ecc71)
+    else:
+        await interaction.followup.send("❌ Ошибка сохранения данных.")
+
+@app_commands.command(name="addbalance", description="➕ Добавить монеты игроку")
+@app_commands.describe(nickname="Ник игрока", amount="Сумма")
+async def addbalance(interaction: discord.Interaction, nickname: str, amount: float):
+    if interaction.channel.id != LK_CHANNEL_ID:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
+        return
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+    if amount <= 0:
+        await interaction.response.send_message("❌ Сумма должна быть больше 0.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    users_data = await get_users_yml_sftp()
+    if not users_data or "players" not in users_data:
+        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
+        return
+    found = await interaction.client.find_player_by_nick(nickname, users_data)
+    if not found:
+        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
+        return
+    uuid, data = found
+    current = data.get("balance", 0.0)
+    users_data["players"][uuid]["balance"] = current + amount
+    if await put_users_yml_sftp(users_data):
+        await interaction.followup.send(f"✅ Добавлено `{amount:.2f}` монет игроку **{nickname}** (теперь: {current + amount:.2f})")
+        await send_log(interaction.guild, "➕ Добавлены монеты", f"Руководство {interaction.user.mention} добавил {amount:.2f} монет игроку **{nickname}**", color=0x2ecc71)
+    else:
+        await interaction.followup.send("❌ Ошибка сохранения данных.")
+
+@app_commands.command(name="takebalance", description="➖ Снять монеты у игрока")
+@app_commands.describe(nickname="Ник игрока", amount="Сумма")
+async def takebalance(interaction: discord.Interaction, nickname: str, amount: float):
+    if interaction.channel.id != LK_CHANNEL_ID:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
+        return
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+    if amount <= 0:
+        await interaction.response.send_message("❌ Сумма должна быть больше 0.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    users_data = await get_users_yml_sftp()
+    if not users_data or "players" not in users_data:
+        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
+        return
+    found = await interaction.client.find_player_by_nick(nickname, users_data)
+    if not found:
+        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
+        return
+    uuid, data = found
+    current = data.get("balance", 0.0)
+    if current < amount:
+        await interaction.followup.send(f"❌ У игрока **{nickname}** недостаточно монет (есть: {current:.2f})")
+        return
+    users_data["players"][uuid]["balance"] = current - amount
+    if await put_users_yml_sftp(users_data):
+        await interaction.followup.send(f"✅ Снято `{amount:.2f}` монет у игрока **{nickname}** (осталось: {current - amount:.2f})")
+        await send_log(interaction.guild, "➖ Сняты монеты", f"Руководство {interaction.user.mention} снял {amount:.2f} монет у игрока **{nickname}**", color=0xe74c3c)
+    else:
+        await interaction.followup.send("❌ Ошибка сохранения данных.")
+
+@app_commands.command(name="setrelic", description="💎 Установить реликвии игроку")
+@app_commands.describe(nickname="Ник игрока", amount="Количество")
+async def setrelic(interaction: discord.Interaction, nickname: str, amount: int):
+    if interaction.channel.id != LK_CHANNEL_ID:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
+        return
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+    if amount < 0:
+        await interaction.response.send_message("❌ Количество не может быть отрицательным.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    users_data = await get_users_yml_sftp()
+    if not users_data or "players" not in users_data:
+        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
+        return
+    found = await interaction.client.find_player_by_nick(nickname, users_data)
+    if not found:
+        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
+        return
+    uuid, data = found
+    users_data["players"][uuid]["relics"] = amount
+    if await put_users_yml_sftp(users_data):
+        await interaction.followup.send(f"✅ Реликвии игрока **{nickname}** установлены на `{amount}` шт.")
+        await send_log(interaction.guild, "💎 Установлены реликвии", f"Руководство {interaction.user.mention} установил реликвии игрока **{nickname}** = {amount}", color=0x9b59b6)
+    else:
+        await interaction.followup.send("❌ Ошибка сохранения данных.")
+
+@app_commands.command(name="addrelic", description="➕ Добавить реликвии игроку")
+@app_commands.describe(nickname="Ник игрока", amount="Количество")
+async def addrelic(interaction: discord.Interaction, nickname: str, amount: int):
+    if interaction.channel.id != LK_CHANNEL_ID:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
+        return
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+    if amount <= 0:
+        await interaction.response.send_message("❌ Количество должно быть больше 0.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    users_data = await get_users_yml_sftp()
+    if not users_data or "players" not in users_data:
+        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
+        return
+    found = await interaction.client.find_player_by_nick(nickname, users_data)
+    if not found:
+        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
+        return
+    uuid, data = found
+    current = data.get("relics", 0)
+    users_data["players"][uuid]["relics"] = current + amount
+    if await put_users_yml_sftp(users_data):
+        await interaction.followup.send(f"✅ Добавлено `{amount}` реликвий игроку **{nickname}** (теперь: {current + amount})")
+        await send_log(interaction.guild, "➕ Добавлены реликвии", f"Руководство {interaction.user.mention} добавил {amount} реликвий игроку **{nickname}**", color=0x9b59b6)
+    else:
+        await interaction.followup.send("❌ Ошибка сохранения данных.")
+
+@app_commands.command(name="takerelic", description="➖ Снять реликвии у игрока")
+@app_commands.describe(nickname="Ник игрока", amount="Количество")
+async def takerelic(interaction: discord.Interaction, nickname: str, amount: int):
+    if interaction.channel.id != LK_CHANNEL_ID:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
+        return
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+    if amount <= 0:
+        await interaction.response.send_message("❌ Количество должно быть больше 0.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    users_data = await get_users_yml_sftp()
+    if not users_data or "players" not in users_data:
+        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
+        return
+    found = await interaction.client.find_player_by_nick(nickname, users_data)
+    if not found:
+        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
+        return
+    uuid, data = found
+    current = data.get("relics", 0)
+    if current < amount:
+        await interaction.followup.send(f"❌ У игрока **{nickname}** недостаточно реликвий (есть: {current})")
+        return
+    users_data["players"][uuid]["relics"] = current - amount
+    if await put_users_yml_sftp(users_data):
+        await interaction.followup.send(f"✅ Снято `{amount}` реликвий у игрока **{nickname}** (осталось: {current - amount})")
+        await send_log(interaction.guild, "➖ Сняты реликвии", f"Руководство {interaction.user.mention} снял {amount} реликвий у игрока **{nickname}**", color=0xe74c3c)
+    else:
+        await interaction.followup.send("❌ Ошибка сохранения данных.")
+
+@app_commands.command(name="resetplayer", description="🔄 Сбросить все данные игрока (группы, баланс, реликвии)")
+@app_commands.describe(nickname="Ник игрока")
+async def resetplayer(interaction: discord.Interaction, nickname: str):
+    if interaction.channel.id != LK_CHANNEL_ID:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
+        return
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    users_data = await get_users_yml_sftp()
+    if not users_data or "players" not in users_data:
+        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
+        return
+    found = await interaction.client.find_player_by_nick(nickname, users_data)
+    if not found:
+        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
+        return
+    uuid, data = found
+    users_data["players"][uuid]["groups"] = []
+    users_data["players"][uuid]["balance"] = 0.0
+    users_data["players"][uuid]["relics"] = 0
+    if await put_users_yml_sftp(users_data):
+        await interaction.followup.send(f"✅ Данные игрока **{nickname}** сброшены (группы, баланс, реликвии обнулены)")
+        await send_log(interaction.guild, "🔄 Сброс игрока", f"Руководство {interaction.user.mention} сбросил данные игрока **{nickname}**", color=0xe67e22)
+    else:
+        await interaction.followup.send("❌ Ошибка сохранения данных.")
+
 # ==================== UI КОМПОНЕНТЫ ====================
 class WelcomeButtonsView(discord.ui.View):
     def __init__(self, guild_id: int = 0):
@@ -1293,6 +1623,7 @@ class KingdomBot(commands.Bot):
         self.user_level_cache = {}
 
     async def setup_hook(self):
+        # Основные команды (изначальные)
         self.tree.add_command(lk)
         self.tree.add_command(bind)
         self.tree.add_command(chance)
@@ -1318,6 +1649,19 @@ class KingdomBot(commands.Bot):
         self.tree.add_command(setmessages)
         self.tree.add_command(addmessages)
         self.tree.add_command(resetmessages)
+
+        # Команды управления игровыми данными (из minecraft_admin)
+        self.tree.add_command(addgroup)
+        self.tree.add_command(removegroup)
+        self.tree.add_command(listgroups)
+        self.tree.add_command(setbalance)
+        self.tree.add_command(addbalance)
+        self.tree.add_command(takebalance)
+        self.tree.add_command(setrelic)
+        self.tree.add_command(addrelic)
+        self.tree.add_command(takerelic)
+        self.tree.add_command(resetplayer)
+
         try:
             from mc_status import StatusButtonsView
             self.add_view(StatusButtonsView())
