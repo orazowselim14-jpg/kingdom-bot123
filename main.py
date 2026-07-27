@@ -1903,6 +1903,15 @@ class KingdomBot(commands.Bot):
         except Exception as e:
             print(f"❌ Не удалось отправить сообщение об ошибке пользователю: {e}")
 
+    # ==================== ДОБАВЛЕННЫЙ ФУНКЦИОНАЛ: СОЗДАНИЕ ВЕТОК В МЕДИА-КАНАЛЕ ====================
+    MEDIA_THREADS_FILE = "media_threads.json"
+
+    def load_media_threads(self):
+        return load_json(self.MEDIA_THREADS_FILE, {})
+
+    def save_media_threads(self, data):
+        save_json(self.MEDIA_THREADS_FILE, data)
+
     async def on_message(self, message: discord.Message):
         if message.author == self.user:
             return
@@ -1929,6 +1938,29 @@ class KingdomBot(commands.Bot):
                 counts[user_id] = new_count
                 save_message_counts(counts)
                 await update_user_level(self, message.author, new_count, message.channel)
+
+        # ========== НОВОЕ: СОЗДАНИЕ ВЕТКИ В МЕДИА-КАНАЛЕ ==========
+        if isinstance(message.channel, discord.TextChannel) and message.channel.id == MEDIA_CHANNEL_ID:
+            if not message.author.bot:  # не создаём ветку для сообщений от бота
+                threads_data = self.load_media_threads()
+                if str(message.id) not in threads_data:
+                    try:
+                        # Создаём ветку с названием "Комментарии"
+                        thread = await message.create_thread(
+                            name="Комментарии",
+                            auto_archive_duration=1440  # 24 часа
+                        )
+                        # Сохраняем ID ветки в JSON
+                        threads_data[str(message.id)] = thread.id
+                        self.save_media_threads(threads_data)
+                        # Отправляем приветственное сообщение в ветку
+                        await thread.send(
+                            f"💬 Ветка для комментариев к сообщению от {message.author.mention}.\n"
+                            "Обсуждайте здесь этот пост."
+                        )
+                        print(f"✅ Создана ветка для сообщения {message.id} в канале медиа")
+                    except Exception as e:
+                        print(f"❌ Ошибка создания ветки для сообщения {message.id}: {e}")
 
         # ========== ОСТАЛЬНАЯ ОБРАБОТКА ==========
         lowered_content = message.content.lower().strip()
