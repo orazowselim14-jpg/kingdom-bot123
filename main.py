@@ -94,7 +94,6 @@ LEVEL_THRESHOLDS = {
     20: 10000
 }
 
-# Соответствие уровня и роли
 LEVEL_ROLE_MAP = {
     1: ROLE_1,
     5: ROLE_5,
@@ -113,7 +112,6 @@ def get_level(count: int) -> int:
     return lvl
 
 def get_role_for_level(level: int) -> int:
-    # Возвращает ID роли для уровня, если она есть, иначе None
     return LEVEL_ROLE_MAP.get(level)
 
 # ==================== JSON-ФУНКЦИИ ====================
@@ -328,31 +326,25 @@ def format_time(seconds: int) -> str:
 
 # ==================== ОСНОВНАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ УРОВНЯ ====================
 async def update_user_level(bot: commands.Bot, member: discord.Member, new_count: int, channel: discord.TextChannel = None):
-    """Обновляет уровень пользователя, выдаёт/снимает роли, отправляет поздравление."""
     new_level = get_level(new_count)
-    # Получаем старый уровень из кеша
     old_level = bot.user_level_cache.get(member.id, 1)
     if new_level == old_level:
         return
 
-    # Снимаем старую роль уровня (если она есть)
     old_role_id = get_role_for_level(old_level)
     if old_role_id:
         old_role = member.guild.get_role(old_role_id)
         if old_role and old_role in member.roles:
             await member.remove_roles(old_role, reason=f"Уровень повысился до {new_level}")
 
-    # Выдаём новую роль уровня (если она есть)
     new_role_id = get_role_for_level(new_level)
     if new_role_id:
         new_role = member.guild.get_role(new_role_id)
         if new_role and new_role not in member.roles:
             await member.add_roles(new_role, reason=f"Достигнут уровень {new_level}")
 
-    # Обновляем кеш
     bot.user_level_cache[member.id] = new_level
 
-    # Если уровень повысился и есть канал для поздравления
     if new_level > old_level and channel:
         try:
             await channel.send(
@@ -430,10 +422,7 @@ async def lk(interaction: discord.Interaction, player: str = None):
         gname = g.get("name", "unknown")
         expire = g.get("expire", -1)
         prefix = interaction.client.get_group_prefix(gname, users_data)
-        if prefix:
-            display_name = f"{prefix} {gname}"
-        else:
-            display_name = gname
+        display_name = f"{prefix} {gname}" if prefix else gname
         if expire == -1:
             groups_list.append(f"• {display_name} (бессрочно)")
         else:
@@ -791,7 +780,6 @@ async def setup_applications(interaction: discord.Interaction):
     await channel.send(embed=embed, view=view)
     await interaction.followup.send("✅ Сообщение с заявками отправлено в канал!", ephemeral=True)
 
-# ==================== НОВЫЕ КОМАНДЫ ====================
 @app_commands.command(name="messages", description="📊 Показать количество сообщений и уровень")
 @app_commands.describe(user="Пользователь (оставьте пустым для себя)")
 async def messages(interaction: discord.Interaction, user: discord.Member = None):
@@ -844,7 +832,6 @@ async def top(interaction: discord.Interaction):
     embed.set_footer(text="Kingdom of Joy | Топ", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
     await interaction.response.send_message(embed=embed)
 
-# ==================== АДМИН-КОМАНДЫ ====================
 @app_commands.command(name="setmessages", description="⚙️ Установить точное количество сообщений пользователю")
 @app_commands.describe(user="Пользователь", count="Новое количество")
 async def setmessages(interaction: discord.Interaction, user: discord.Member, count: int):
@@ -861,7 +848,6 @@ async def setmessages(interaction: discord.Interaction, user: discord.Member, co
         counts[str(user.id)] = count
         save_message_counts(counts)
 
-        # Обновляем уровень
         await update_user_level(interaction.client, user, count, interaction.channel)
 
         await interaction.followup.send(f"✅ Пользователю {user.mention} установлено `{count}` сообщений.", ephemeral=True)
@@ -887,7 +873,6 @@ async def addmessages(interaction: discord.Interaction, user: discord.Member, am
         counts[str(user.id)] = new_count
         save_message_counts(counts)
 
-        # Обновляем уровень
         await update_user_level(interaction.client, user, new_count, interaction.channel)
 
         await interaction.followup.send(f"✅ Пользователю {user.mention} добавлено `{amount}` сообщений. Теперь: `{new_count}`.", ephemeral=True)
@@ -926,12 +911,9 @@ async def resetmessages(interaction: discord.Interaction):
             member = guild.get_member(int(user_id))
             if member and VERIFY_ROLE_ID in [r.id for r in member.roles]:
                 counts[user_id] = 0
-                # Снимаем все роли уровней
                 await member.remove_roles(role_1, role_5, role_10, role_15, role_20, reason="Обнуление счётчика сообщений")
-                # Выдаём роль 1 уровня
                 if role_1:
                     await member.add_roles(role_1, reason="Обнуление счётчика сообщений (уровень 1)")
-                # Обновляем кеш уровня
                 interaction.client.user_level_cache[member.id] = 1
         save_message_counts(counts)
 
@@ -940,7 +922,6 @@ async def resetmessages(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
 
-# ==================== КОМАНДА /send ====================
 @app_commands.command(name="send", description="📨 Отправить объявление/сообщение в канал (только для руководства)")
 @app_commands.describe(text="Текст сообщения", color="Цвет в HEX (например #ff0000)")
 async def send_cmd(interaction: discord.Interaction, text: str, color: str = None):
@@ -1287,14 +1268,10 @@ class VerifyView(discord.ui.View):
             await interaction.response.send_message("✅ Вы уже верифицированы!", ephemeral=True)
             return
 
-        # Если у пользователя нет роли участника, выдаём всё
         try:
-            # Снимаем неверифицированную роль
             if unverified_role in interaction.user.roles:
                 await interaction.user.remove_roles(unverified_role)
-            # Выдаём роль участника и роль 1 уровня
             await interaction.user.add_roles(verified_role, role_1)
-            # Обновляем кеш уровня
             interaction.client.user_level_cache[interaction.user.id] = 1
             await interaction.response.send_message(f"✅ Поздравляю! Вы успешно верифицированы. Вам выдана роль {verified_role.mention} и роль 1 уровня.", ephemeral=True)
             await send_log(interaction.guild, "✅ Верификация", f"Пользователь {interaction.user.mention} успешно верифицирован, выдана роль 1 уровня.", color=0x2ecc71)
@@ -1313,7 +1290,7 @@ class KingdomBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents, allowed_mentions=allowed_mentions)
         self.reacted_messages = set()
         self.user_badword_counts = {}
-        self.user_level_cache = {}  # Кеш уровней пользователей {user_id: level}
+        self.user_level_cache = {}
 
     async def setup_hook(self):
         self.tree.add_command(lk)
@@ -1519,6 +1496,12 @@ class KingdomBot(commands.Bot):
             return True
         return any(r.id in [CREATOR_ROLE_ID, FOUNDER_ROLE_ID, MODERATOR_ROLE_ID] for r in m.roles)
 
+    def is_allowed_staff_sync(self, message: discord.Message) -> bool:
+        m = message.author
+        if m.id in CREATOR_AND_ROLE_IDS:
+            return True
+        return any(r.id in [CREATOR_ROLE_ID, FOUNDER_ROLE_ID, MODERATOR_ROLE_ID] for r in m.roles)
+
     def check_hierarchy(self, moderator: discord.Member, target: discord.Member) -> bool:
         if moderator.id in CREATOR_AND_ROLE_IDS:
             return True
@@ -1576,7 +1559,7 @@ class KingdomBot(commands.Bot):
         except Exception as e:
             print(f"❌ Не удалось отправить сообщение об ошибке пользователю: {e}")
 
-    async def on_message(self, message):
+    async def on_message(self, message: discord.Message):
         if message.author == self.user:
             return
 
@@ -1601,11 +1584,12 @@ class KingdomBot(commands.Bot):
                 new_count = counts.get(user_id, 0) + 1
                 counts[user_id] = new_count
                 save_message_counts(counts)
-                # Обновляем уровень пользователя
                 await update_user_level(self, message.author, new_count, message.channel)
 
         # ========== ОСТАЛЬНАЯ ОБРАБОТКА ==========
         lowered_content = message.content.lower().strip()
+
+        # Обработка синхронизации
         if lowered_content.startswith("!sync"):
             if message.author.id != 1437779380184158249:
                 return
@@ -1625,6 +1609,7 @@ class KingdomBot(commands.Bot):
                 await status_msg.edit(content=f"❌ Ошибка синхронизации: `{e}`")
             return
 
+        # Префиксные модераторские команды
         if lowered_content.startswith(("!мут", "!бан", "!варн", "!удалить")):
             if not self.is_allowed_staff_sync(message):
                 await message.channel.send("❌ У вас недостаточно прав для использования этой команды.", delete_after=5)
@@ -1632,44 +1617,52 @@ class KingdomBot(commands.Bot):
             parts = message.content.split()
             cmd = parts[0].lower()
             if len(parts) < 2:
-                await message.channel.send("❌ Укажите пользователя (например, `!мут @User 1h`)", delete_after=5)
+                await message.channel.send("⚠️ Использование: `!мут/!бан/!варн @пользователь [время/причина]`", delete_after=5)
                 return
-            target = None
-            if len(message.mentions) > 0:
-                target = message.mentions[0]
-            else:
+
+            targets = message.mentions
+            target = targets[0] if targets else None
+
+            if not target and parts[1].isdigit():
                 try:
-                    target_id = int(parts[1])
-                    target = await message.guild.fetch_member(target_id)
+                    target = await message.guild.fetch_member(int(parts[1]))
                 except:
-                    await message.channel.send("❌ Пользователь не найден. Используйте упоминание (@User).", delete_after=5)
-                    return
+                    pass
+
+            if cmd == "!удалить":
+                try:
+                    amount = int(parts[1])
+                    deleted = await message.channel.purge(limit=amount + 1)
+                    await message.channel.send(make_blockquote(f"🧹 Удалено {len(deleted)-1} сообщений."), delete_after=5)
+                    await send_log(message.guild, "🧹 Очистка ЧАТА", f"Модератор {message.author.mention} очистил `{len(deleted)-1}` сообщений.", color=0x34495e)
+                except Exception as e:
+                    await message.channel.send(f"❌ Ошибка: `{e}`", delete_after=5)
+                return
+
             if not target:
-                await message.channel.send("❌ Пользователь не найден.", delete_after=5)
+                await message.channel.send("❌ Укажите корректного пользователя.", delete_after=5)
                 return
-            if is_high_staff(target):
-                await message.channel.send("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", delete_after=5)
+
+            if is_high_staff(target) or not self.check_hierarchy(message.author, target):
+                await message.channel.send("❌ Нельзя применить действие к этому пользователю.", delete_after=5)
                 return
+
             if cmd == "!мут":
                 time_str = parts[2] if len(parts) > 2 else "10m"
-                reason = " ".join(parts[3:]) if len(parts) > 3 else "Нарушение"
+                reason = " ".join(parts[3:]) if len(parts) > 3 else "Нарушение правил"
                 duration = parse_duration(time_str)
-                try:
-                    await target.timeout(duration, reason=reason)
-                    await message.channel.send(make_blockquote(f"🔇 {target.mention} отправлен в мут на **{time_str}**."))
-                    await send_log(message.guild, "🔇 Выдан Мут (префикс)", f"Модератор: {message.author.mention}\nНарушитель: {target.mention}\nСрок: `{time_str}`\nПричина: *{reason}*", color=0xe74c3c)
-                except Exception as e:
-                    await message.channel.send(f"❌ Ошибка: {e}")
+                await target.timeout(duration, reason=reason)
+                await message.channel.send(make_blockquote(f"🔇 {target.mention} замучен на **{time_str}**."))
+                await send_log(message.guild, "🔇 Выдан Мут", f"Модератор: {message.author.mention}\nНарушитель: {target.mention}\nСрок: `{time_str}`\nПричина: *{reason}*", color=0xe74c3c)
+
             elif cmd == "!бан":
-                reason = " ".join(parts[2:]) if len(parts) > 2 else "Нарушение"
-                try:
-                    await target.ban(reason=reason)
-                    await message.channel.send(make_blockquote(f"🚫 {target.mention} забанен."))
-                    await send_log(message.guild, "🚫 Бан (префикс)", f"Модератор: {message.author.mention}\nНарушитель: {target.mention}\nПричина: *{reason}*", color=0x900c3f)
-                except Exception as e:
-                    await message.channel.send(f"❌ Ошибка: {e}")
+                reason = " ".join(parts[2:]) if len(parts) > 2 else "Нарушение правил"
+                await target.ban(reason=reason)
+                await message.channel.send(make_blockquote(f"🚫 {target.mention} забанен."))
+                await send_log(message.guild, "🚫 Бан", f"Модератор {message.author.mention} забанил {target.mention}.\nПричина: *{reason}*", color=0x900c3f)
+
             elif cmd == "!варн":
-                reason = " ".join(parts[2:]) if len(parts) > 2 else "Нарушение"
+                reason = " ".join(parts[2:]) if len(parts) > 2 else "Нарушение правил"
                 warns = load_json(WARNS_FILE, {})
                 uid = str(target.id)
                 count = warns.get(uid, 0) + 1
@@ -1683,90 +1676,48 @@ class KingdomBot(commands.Bot):
                     warns[uid] = count
                     save_json(WARNS_FILE, warns)
                     await message.channel.send(make_blockquote(f"⚠️ {target.mention} получил варн **({count}/3)**. Причина: *{reason}*"))
-                    await send_log(message.guild, "⚠️ Выдан Варн (префикс)", f"Модератор: {message.author.mention}\nНарушитель: {target.mention}\nВарны: `{count}/3`\nПричина: *{reason}*", color=0xe67e22)
-            elif cmd == "!удалить":
-                amount_str = parts[1] if len(parts) > 1 else "10"
-                try:
-                    limit = 1000 if amount_str.lower() == "all" else int(amount_str)
-                    deleted = await message.channel.purge(limit=limit + 1)
-                    await message.channel.send(make_blockquote(f"🧹 Удалено {len(deleted)-1} сообщений."), delete_after=5)
-                    await send_log(message.guild, "🧹 Очистка ЧАТА (префикс)", f"Модератор {message.author.mention} очистил `{len(deleted)-1}` сообщений в канале {message.channel.mention}.", color=0x34495e)
-                except Exception as e:
-                    await message.channel.send(f"❌ Ошибка: {e}")
+                    await send_log(message.guild, "⚠️ Выдан Варн", f"Модератор: {message.author.mention}\nНарушитель: {target.mention}\nВарны: `{count}/3`\nПричина: *{reason}*", color=0xe67e22)
             return
 
-        chance_triggers = ("правда ли", "какова вероятность", "инфа что", "шанс что", "инфа ")
-        if lowered_content.startswith(chance_triggers):
-            val = random.randint(0, 100)
-            await message.reply(
-                make_blockquote(f"🎲 **Шансометр Kingdom of Joy:**\nВероятность этого составляет: **{val}%**"),
-                mention_author=False
-            )
-            return
+        # ========== АВТО-РЕАКЦИИ И ФИЛЬТРЫ ==========
+        for trigger in BALKAN_TRIGGERS:
+            if trigger in message.content:
+                for emoji in CUSTOM_REACTIONS:
+                    try:
+                        await message.add_reaction(emoji)
+                    except:
+                        pass
+                break
 
-        if message.channel.id == MEDIA_CHANNEL_ID and not message.thread:
-            try:
-                await message.create_thread(name="💬 Комментарии")
-            except Exception:
-                pass
-
-        if isinstance(message.channel, discord.TextChannel) and message.channel.id == SUPPORT_CHANNEL_ID:
-            if message.type == discord.MessageType.thread_created or message.author != self.user:
-                try:
-                    await message.delete()
-                except Exception:
-                    pass
-                return
-
-        if not isinstance(message.channel, discord.TextChannel):
-            return
-
-        badwords_cfg = load_json(BADWORDS_FILE, {})
-        words = badwords_cfg.get("words", [])
-        if words and any(w in lowered_content for w in words):
-            uid = str(message.author.id)
-            self.user_badword_counts[uid] = self.user_badword_counts.get(uid, 0) + 1
-            try:
-                await message.delete()
-            except Exception:
-                pass
-            if self.user_badword_counts[uid] >= 3:
-                self.user_badword_counts[uid] = 0
-                m_time = badwords_cfg.get("mute_time", "1h")
-                await message.author.timeout(parse_duration(m_time), reason="3x Запрещенные слова")
-                await message.channel.send(make_blockquote(f"🔇 {message.author.mention} отправлен в мут на **{m_time}**."), delete_after=10)
-                await send_log(message.guild, "🔇 Авто-Мут (Слова)", f"Пользователь {message.author.mention} получил авто-мут на `{m_time}` за использование запрещённых слов (3/3).", color=0xc0392b)
-            else:
-                await message.channel.send(make_blockquote(f"⚠️ {message.author.mention}, запрещенное слово! ({self.user_badword_counts[uid]}/3)"), delete_after=5)
-            return
-
-        if message.id not in self.reacted_messages:
-            placed = False
-            if any(u.id in CREATOR_AND_ROLE_IDS for u in message.mentions) or any(t in message.content for t in SPECIAL_TRIGGERS):
+        for trigger in SPECIAL_TRIGGERS:
+            if trigger in message.content:
                 try:
                     await message.add_reaction(CROWN_EMOJI)
-                    placed = True
-                except Exception:
+                except:
                     pass
-            if any(t in message.content for t in BALKAN_TRIGGERS) and not placed:
-                try:
-                    await message.add_reaction(random.choice(CUSTOM_REACTIONS))
-                    placed = True
-                except Exception:
-                    pass
-            if placed:
-                self.reacted_messages.add(message.id)
+                break
+
+        # Фильтр плохих слов
+        badwords_data = load_json(BADWORDS_FILE, {})
+        bad_words = badwords_data.get("words", [])
+        mute_time = badwords_data.get("mute_time", "1h")
+
+        if bad_words and not is_calm_member(message.author):
+            for word in bad_words:
+                if re.search(rf"\b{re.escape(word)}\b", message.content, re.IGNORECASE):
+                    try:
+                        await message.delete()
+                        duration = parse_duration(mute_time)
+                        await message.author.timeout(duration, reason=f"Использование запрещенных слов: {word}")
+                        await message.channel.send(make_blockquote(f"🔇 {message.author.mention} замучен на **{mute_time}** за использование запрещенных слов."), delete_after=10)
+                        await send_log(message.guild, "🛡️ Авто-Мут (Запрещенные слова)", f"Пользователь: {message.author.mention}\nСлово: `{word}`\nМут: `{mute_time}`", color=0xe74c3c)
+                    except Exception as e:
+                        print(f"❌ Ошибка фильтра плохих слов: {e}")
+                    break
 
         await self.process_commands(message)
 
-    def is_allowed_staff_sync(self, message: discord.Message) -> bool:
-        m = message.author
-        if m.id in CREATOR_AND_ROLE_IDS:
-            return True
-        return any(r.id in [CREATOR_ROLE_ID, FOUNDER_ROLE_ID, MODERATOR_ROLE_ID] for r in m.roles)
-
-client = KingdomBot()
-client.tree.on_error = client.on_tree_error
-
+# ==================== ЗАПУСК БОТА ====================
 if __name__ == "__main__":
-    client.run(TOKEN, reconnect=True)
+    bot = KingdomBot()
+    bot.run(TOKEN)
