@@ -1,63 +1,143 @@
 import discord
-from discord.ext import commands
+from discord.ext import tasks, commands
 from discord import app_commands
-from config import SFTP_HOST, SFTP_PORT, SFTP_USER, SFTP_PASSWORD, SFTP_REMOTE_PATH, RCON_HOST, RCON_PORT, RCON_PASSWORD
+from config import TOKEN, SFTP_HOST, SFTP_PORT, SFTP_USER, SFTP_PASSWORD, SFTP_REMOTE_PATH
 import asyncio
+import random
+from datetime import datetime, timezone, timedelta
 import json
 import os
+import io
+import traceback
+from PIL import Image, ImageDraw, ImageFont
+import re
+import aiohttp
 import yaml
 import paramiko
 import time
-import socket
-import struct
-import aiohttp
-from datetime import datetime, timezone, timedelta
 
 # ==================== КОНСТАНТЫ ====================
 LK_CHANNEL_ID = 1529937315890204836
+VERIFY_CHANNEL_ID = 1529538303559205047
+VERIFY_ROLE_ID = 1505240271200456864
+UNVERIFIED_ROLE_ID = 1529537943663018045
+VERIFY_MSG_FILE = "verify_msg.json"
+APPLICATIONS_CHANNEL_ID = 1530237443767533748
+ROLE_MAPPER = 1525487051544203395
+ROLE_MODERATOR = 1505275521825771520
+ROLE_CINEMA = 1505250838053126345
+ROLE_GIRL = 1505251541039321290
 HIGHER_ROLES = [1526681612337549343, 1505438802653741096, 1530235500886102216, 1505235504826814535]
-CREATOR_AND_ROLE_IDS = [1437779380184158249, 1001913830261129237, 1308313239775608863]
 MSK = timezone(timedelta(hours=3))
+WARNS_FILE = "warns.json"
+SUPPORT_CONFIG_FILE = "support_config.json"
+BADWORDS_FILE = "badwords.json"
+REMINDERS_FILE = "reminders.json"
+APPLICATIONS_CONFIG_FILE = "applications_config.json"
+CREATOR_AND_ROLE_IDS = [1437779380184158249, 1001913830261129237, 1308313239775608863]
+CREATOR_ROLE_ID = 1505438802653741096
+FOUNDER_ROLE_ID = 1505235504826814535
+MODERATOR_ROLE_ID = 1505275521825771520
+COMPLAINTS_DEPT_ROLE_ID = 1527627623428128879
+CALM_ROLE_IDS = [1526681612337549343, 1505438802653741096]
+IMMUNE_ROLE_IDS = [CREATOR_ROLE_ID, FOUNDER_ROLE_ID]
 LOGS_CHANNEL_ID = 1505274763096883230
+SUPPORT_CHANNEL_ID = 1526688069464625305
+MEDIA_CHANNEL_ID = 1505266075347193976
+WELCOME_CHANNEL_ID = 1505280068656824400
+EXCLUDED_LOG_CHANNEL = 1505543466426437712
+BALKAN_TRIGGERS = ['БАЛКАН', 'балкан', 'balkan', 'BALKAN', 'Balkan', 'Балкан']
+SPECIAL_TRIGGERS = ['Вова', 'vovancho', 'вован', 'вова', 'вовчек', 'ВОВА', 'харчек', 'харута', 'ХАРУТА', 'haryta', 'Haryta']
+CUSTOM_REACTIONS = [
+    discord.PartialEmoji(name="e1", id=1506903029671137390),
+    discord.PartialEmoji(name="e2", id=1506902413574012938),
+    discord.PartialEmoji(name="e3", id=1506904586655498350)
+]
+CROWN_EMOJI = discord.PartialEmoji(name="crown", id=1506904987845001236)
 
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+# ==================== КОНСТАНТЫ УРОВНЕЙ ====================
+ROLE_1 = 1505457314751320064            # Уровень 1
+ROLE_5 = 1505457763894165595             # Уровень 5 (500 сообщений)
+ROLE_10 = 1505479667954487398            # Уровень 10 (1000 сообщений)
+ROLE_15 = 1530587772132528353            # Уровень 15 (3000 сообщений)
+ROLE_20 = 1505480198580080650            # Уровень 20 (10000 сообщений)
 
-def make_blockquote(text: str) -> str:
-    lines = text.strip().split('\n')
-    return "\n".join([f"> {line}" if line.strip() else ">" for line in lines])
+COUNT_CHANNELS = [
+    1505239843486306374,
+    1505266075347193976,
+    1505822985309917274,
+    1525488573950853342
+]
+UNVERIFIED_ALLOWED_CATEGORY = 1505265810015523016
+BOT_CHANNEL = 1505591602360615015
 
-def format_time(seconds: int) -> str:
-    days = seconds // 86400
-    hours = (seconds % 86400) // 3600
-    minutes = (seconds % 3600) // 60
-    secs = seconds % 60
-    if days > 0:
-        return f"{days}д {hours:02d}ч {minutes:02d}м {secs:02d}с"
-    elif hours > 0:
-        return f"{hours}ч {minutes:02d}м {secs:02d}с"
-    elif minutes > 0:
-        return f"{minutes}м {secs:02d}с"
-    else:
-        return f"{secs}с"
+LEVEL_THRESHOLDS = {
+    1: 0,
+    2: 10,
+    3: 25,
+    4: 50,
+    5: 100,
+    6: 200,
+    7: 350,
+    8: 500,
+    9: 700,
+    10: 1000,
+    11: 1300,
+    12: 1700,
+    13: 2100,
+    14: 2600,
+    15: 3100,
+    16: 3700,
+    17: 4400,
+    18: 5200,
+    19: 6100,
+    20: 10000
+}
 
-def parse_time_duration(time_str: str) -> int:
-    if not time_str:
-        return -1
-    unit = time_str[-1].lower()
+LEVEL_ROLE_MAP = {
+    1: ROLE_1,
+    5: ROLE_5,
+    10: ROLE_10,
+    15: ROLE_15,
+    20: ROLE_20
+}
+
+MESSAGE_COUNTS_FILE = "message_counts.json"
+
+def get_level(count: int) -> int:
+    lvl = 1
+    for level, threshold in LEVEL_THRESHOLDS.items():
+        if count >= threshold:
+            lvl = level
+    return lvl
+
+def get_role_for_level(level: int) -> int:
+    return LEVEL_ROLE_MAP.get(level)
+
+# ==================== JSON-ФУНКЦИИ ====================
+def load_json(filepath, default):
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"❌ Ошибка чтения {filepath}: {e}")
+            return default
+    return default
+
+def save_json(filepath, data):
     try:
-        value = int(time_str[:-1])
-    except:
-        return -1
-    if unit == 'd':
-        return value * 86400
-    elif unit == 'h':
-        return value * 3600
-    elif unit == 'm':
-        return value * 60
-    elif unit == 's':
-        return value
-    else:
-        return -1
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f"❌ Ошибка сохранения {filepath}: {e}")
+
+# ==================== СЧЁТЧИКИ СООБЩЕНИЙ ====================
+def load_message_counts():
+    return load_json(MESSAGE_COUNTS_FILE, {})
+
+def save_message_counts(data):
+    save_json(MESSAGE_COUNTS_FILE, data)
 
 # ==================== SFTP ====================
 sftp_cache = {"data": None, "timestamp": 0}
@@ -99,99 +179,18 @@ async def put_users_yml_sftp(data: dict) -> bool:
         print(f"❌ Ошибка SFTP при записи: {e}")
         return False
 
-# ==================== RCON ====================
-class RconClient:
-    def __init__(self, host, port, password):
-        self.host = host
-        self.port = port
-        self.password = password
-        self.sock = None
-        self.authenticated = False
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+def make_blockquote(text: str) -> str:
+    lines = text.strip().split('\n')
+    return "\n".join([f"> {line}" if line.strip() else ">" for line in lines])
 
-    def connect(self):
-        try:
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.settimeout(5.0)
-            self.sock.connect((self.host, self.port))
-            self._send_packet(3, self.password.encode('utf-8'))
-            response = self._receive_packet()
-            if response['id'] == -1:
-                self.authenticated = False
-                raise Exception("Неверный пароль RCON")
-            self.authenticated = True
-            return True
-        except Exception as e:
-            print(f"❌ Ошибка подключения к RCON: {e}")
-            return False
+def is_calm_member(member) -> bool:
+    if not isinstance(member, discord.Member):
+        return False
+    if member.id in CREATOR_AND_ROLE_IDS:
+        return True
+    return any(r.id in CALM_ROLE_IDS for r in member.roles)
 
-    def _send_packet(self, packet_id, payload):
-        packet = struct.pack('<ii', packet_id, 0) + payload + b'\x00\x00'
-        packet = struct.pack('<i', len(packet)) + packet
-        self.sock.send(packet)
-
-    def _receive_packet(self):
-        size_data = self.sock.recv(4)
-        if len(size_data) < 4:
-            return None
-        size = struct.unpack('<i', size_data)[0]
-        packet = self.sock.recv(size)
-        packet_id, response_id = struct.unpack('<ii', packet[:8])
-        payload = packet[8:-2].decode('utf-8')
-        return {'id': packet_id, 'response_id': response_id, 'payload': payload}
-
-    def command(self, cmd):
-        if not self.authenticated:
-            self.connect()
-        try:
-            self._send_packet(2, cmd.encode('utf-8'))
-            response = self._receive_packet()
-            return response['payload'] if response else ""
-        except Exception as e:
-            print(f"❌ Ошибка выполнения RCON команды {cmd}: {e}")
-            return ""
-
-    def close(self):
-        if self.sock:
-            self.sock.close()
-            self.sock = None
-            self.authenticated = False
-
-# ==================== MOJANG API ====================
-uuid_cache = {}
-
-async def get_uuid_by_name(name: str) -> str:
-    if name in uuid_cache:
-        return uuid_cache[name]
-    async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(f"https://api.mojang.com/users/profiles/minecraft/{name}") as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    uuid = data.get("id")
-                    if uuid:
-                        uuid_cache[name] = uuid
-                        return uuid
-                elif resp.status == 204:
-                    return None
-                else:
-                    print(f"⚠️ Mojang API вернул {resp.status}")
-                    return None
-        except Exception as e:
-            print(f"❌ Ошибка запроса к Mojang API: {e}")
-            return None
-
-async def find_player_in_users(nick: str, users_data: dict) -> tuple:
-    if not users_data or "players" not in users_data:
-        return None
-    uuid = await get_uuid_by_name(nick)
-    if not uuid:
-        return None
-    uuid_clean = uuid.replace("-", "")
-    if uuid_clean in users_data["players"]:
-        return uuid_clean, users_data["players"][uuid_clean]
-    return None
-
-# ==================== ОТПРАВКА ЛОГА ====================
 async def send_log(guild: discord.Guild, title: str, description: str, color: int = 0x7864c8, fields: list = None):
     if not guild:
         return
@@ -216,8 +215,150 @@ async def send_log(guild: discord.Guild, title: str, description: str, color: in
     except Exception as e:
         print(f"❌ Ошибка отправки лога: {e}")
 
-# ==================== КОМАНДЫ ====================
+def create_support_banner():
+    width, height = 800, 240
+    img = Image.new('RGB', (width, height), color=(15, 15, 20))
+    draw = ImageDraw.Draw(img)
+    for i in range(height):
+        r = int(15 + (i / height) * 12)
+        g = int(15 + (i / height) * 10)
+        b = int(25 + (i / height) * 35)
+        draw.line([(0, i), (width, i)], fill=(r, g, b))
+    draw.rectangle([10, 10, width - 10, height - 10], outline=(80, 80, 120), width=2)
+    try:
+        font_main = ImageFont.truetype("arial.ttf", 42)
+        font_sub = ImageFont.truetype("arial.ttf", 20)
+    except Exception:
+        font_main = font_sub = ImageFont.load_default()
+    draw.text((width // 2, 80), "KINGDOM OF JOY", fill=(235, 235, 245), font=font_main, anchor="mm")
+    draw.text((width // 2, 130), "SUPPORT & MANAGEMENT HUB", fill=(140, 140, 180), font=font_sub, anchor="mm")
+    buffer = io.BytesIO()
+    img.save(buffer, format='PNG')
+    buffer.seek(0)
+    return discord.File(fp=buffer, filename="support_banner.png")
 
+def create_welcome_banner(display_name: str):
+    width, height = 800, 250
+    img = Image.new('RGB', (width, height), color=(12, 10, 18))
+    draw = ImageDraw.Draw(img)
+    for i in range(height):
+        r = int(12 + (i / height) * 20)
+        g = int(10 + (i / height) * 15)
+        b = int(18 + (i / height) * 45)
+        draw.line([(0, i), (width, i)], fill=(r, g, b))
+    draw.rectangle([10, 10, width - 10, height - 10], outline=(120, 100, 200), width=2)
+    try:
+        font_title = ImageFont.truetype("arial.ttf", 34)
+        font_welcome = ImageFont.truetype("arial.ttf", 24)
+    except Exception:
+        font_title = font_welcome = ImageFont.load_default()
+    draw.text((width // 2, 75), "KINGDOM OF JOY", fill=(180, 160, 255), font=font_title, anchor="mm")
+    draw.text((width // 2, 150), f"ДОБРО ПОЖАЛОВАТЬ, {display_name.upper()}!", fill=(240, 240, 250), font=font_welcome, anchor="mm")
+    buffer = io.BytesIO()
+    img.save(buffer, format='PNG')
+    buffer.seek(0)
+    return discord.File(fp=buffer, filename="welcome_banner.png")
+
+def parse_duration(time_str: str) -> timedelta:
+    try:
+        if time_str.isdigit():
+            return timedelta(minutes=int(time_str))
+        unit = time_str[-1].lower()
+        value = int(time_str[:-1])
+        if unit == 's': return timedelta(seconds=value)
+        elif unit == 'm': return timedelta(minutes=value)
+        elif unit == 'h': return timedelta(hours=value)
+        elif unit == 'd': return timedelta(days=value)
+    except Exception:
+        pass
+    return timedelta(minutes=10)
+
+def parse_time_or_unix(time_input: str) -> int:
+    time_input = time_input.strip()
+    now_ts = int(datetime.now(MSK).timestamp())
+    if time_input.isdigit():
+        val = int(time_input)
+        return val if val > 1500000000 else now_ts + (val * 60)
+    delta = parse_duration(time_input)
+    return now_ts + int(delta.total_seconds())
+
+def is_high_staff(member: discord.Member) -> bool:
+    if not member:
+        return False
+    return any(r.id in HIGHER_ROLES for r in member.roles) or member.id in CREATOR_AND_ROLE_IDS
+
+uuid_cache = {}
+
+async def get_uuid_by_name(name: str) -> str:
+    if name in uuid_cache:
+        return uuid_cache[name]
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(f"https://api.mojang.com/users/profiles/minecraft/{name}") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    uuid = data.get("id")
+                    if uuid:
+                        uuid_cache[name] = uuid
+                        return uuid
+                elif resp.status == 204:
+                    return None
+                else:
+                    print(f"⚠️ Mojang API вернул {resp.status}")
+                    return None
+        except Exception as e:
+            print(f"❌ Ошибка запроса к Mojang API: {e}")
+            return None
+
+def format_time(seconds: int) -> str:
+    days = seconds // 86400
+    hours = (seconds % 86400) // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if days > 0:
+        return f"{days}д {hours:02d}ч {minutes:02d}м {secs:02d}с"
+    elif hours > 0:
+        return f"{hours}ч {minutes:02d}м {secs:02d}с"
+    elif minutes > 0:
+        return f"{minutes}м {secs:02d}с"
+    else:
+        return f"{secs}с"
+
+# ==================== ОСНОВНАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ УРОВНЯ ====================
+async def update_user_level(bot: commands.Bot, member: discord.Member, new_count: int, channel: discord.TextChannel = None):
+    new_level = get_level(new_count)
+    old_level = bot.user_level_cache.get(member.id, 1)
+    if new_level == old_level:
+        return
+
+    old_role_id = get_role_for_level(old_level)
+    if old_role_id:
+        old_role = member.guild.get_role(old_role_id)
+        if old_role and old_role in member.roles:
+            await member.remove_roles(old_role, reason=f"Уровень повысился до {new_level}")
+
+    new_role_id = get_role_for_level(new_level)
+    if new_role_id:
+        new_role = member.guild.get_role(new_role_id)
+        if new_role and new_role not in member.roles:
+            await member.add_roles(new_role, reason=f"Достигнут уровень {new_level}")
+
+    bot.user_level_cache[member.id] = new_level
+
+    if new_level > old_level and channel:
+        try:
+            await channel.send(
+                make_blockquote(
+                    f"🎉 **Поздравляю, {member.mention}!**\n"
+                    f"Ты достиг **{new_level} уровня**!\n"
+                    f"📊 Сообщений: `{new_count}`\n"
+                    f"🏆 Новый уровень: `{new_level}` из 20"
+                )
+            )
+        except Exception as e:
+            print(f"Ошибка отправки поздравления: {e}")
+
+# ==================== СЛЭШ-КОМАНДЫ ====================
 @app_commands.command(name="lk", description="📊 Показать личный кабинет (свой или другого игрока)")
 @app_commands.describe(player="Никнейм или ID игрока (оставьте пустым для своего профиля)")
 async def lk(interaction: discord.Interaction, player: str = None):
@@ -231,12 +372,8 @@ async def lk(interaction: discord.Interaction, player: str = None):
         return
     if not player:
         discord_id = str(interaction.user.id)
-        found = None
-        for uuid, data in users_data["players"].items():
-            if data.get("discord-id") == discord_id:
-                found = (uuid, data)
-                break
-        if not found:
+        result = await interaction.client.find_player_by_discord(discord_id, users_data)
+        if not result:
             embed = discord.Embed(
                 title="🔗 Привяжите аккаунт",
                 description=(
@@ -252,29 +389,25 @@ async def lk(interaction: discord.Interaction, player: str = None):
             )
             await interaction.followup.send(embed=embed)
             return
-        uuid, data = found
+        uuid, data = result
     else:
-        if player.startswith("id "):
+        if player.lower().startswith("id "):
             try:
                 player_id = int(player.split(" ", 1)[1])
             except:
                 await interaction.followup.send("❌ Неверный формат ID. Используйте: `/lk id 123`")
                 return
-            found = None
-            for uuid, data in users_data["players"].items():
-                if data.get("player-id") == player_id:
-                    found = (uuid, data)
-                    break
-            if not found:
+            result = await interaction.client.find_player_by_id(player_id, users_data)
+            if not result:
                 await interaction.followup.send(f"❌ Игрок с ID `{player_id}` не найден.")
                 return
-            uuid, data = found
+            uuid, data = result
         else:
-            found = await find_player_in_users(player, users_data)
-            if not found:
+            result = await interaction.client.find_player_by_nick(player, users_data)
+            if not result:
                 await interaction.followup.send(f"❌ Игрок `{player}` не найден.")
                 return
-            uuid, data = found
+            uuid, data = result
     player_id = data.get("player-id", "—")
     discord_id = data.get("discord-id", "Не привязан")
     tag = data.get("tag", "")
@@ -288,11 +421,13 @@ async def lk(interaction: discord.Interaction, player: str = None):
     for g in groups_data:
         gname = g.get("name", "unknown")
         expire = g.get("expire", -1)
+        prefix = interaction.client.get_group_prefix(gname, users_data)
+        display_name = f"{prefix} {gname}" if prefix else gname
         if expire == -1:
-            groups_list.append(f"• {gname} (бессрочно)")
+            groups_list.append(f"• {display_name} (бессрочно)")
         else:
             expire_date = datetime.fromtimestamp(expire / 1000).strftime("%d.%m.%Y %H:%M")
-            groups_list.append(f"• {gname} (до {expire_date})")
+            groups_list.append(f"• {display_name} (до {expire_date})")
     groups_str = "\n".join(groups_list) if groups_list else "Нет групп"
     try:
         async with aiohttp.ClientSession() as session:
@@ -348,9 +483,9 @@ async def lk(interaction: discord.Interaction, player: str = None):
     )
     await interaction.followup.send(embed=embed)
 
-@app_commands.command(name="вход", description="🔗 Привязать Discord к Minecraft аккаунту")
+@app_commands.command(name="bind", description="🔗 Привязать Discord к Minecraft аккаунту")
 @app_commands.describe(nickname="Ваш ник в Minecraft", password="Пароль от аккаунта (для проверки)")
-async def вход(interaction: discord.Interaction, nickname: str, password: str):
+async def bind(interaction: discord.Interaction, nickname: str, password: str):
     if interaction.channel.id != LK_CHANNEL_ID:
         await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
         return
@@ -360,14 +495,15 @@ async def вход(interaction: discord.Interaction, nickname: str, password: st
     if not users_data or "players" not in users_data:
         await interaction.followup.send("❌ Ошибка чтения базы игроков с сервера.")
         return
-    for uuid, data in users_data["players"].items():
-        if data.get("discord-id") == discord_id:
-            await interaction.followup.send("❌ Этот Discord уже привязан к игроку.", ephemeral=True)
-            return
-    uuid_clean = await get_uuid_by_name(nickname)
-    if not uuid_clean:
+    existing = await interaction.client.find_player_by_discord(discord_id, users_data)
+    if existing:
+        await interaction.followup.send("❌ Этот Discord уже привязан к игроку.", ephemeral=True)
+        return
+    uuid = await get_uuid_by_name(nickname)
+    if not uuid:
         await interaction.followup.send(f"❌ Игрок `{nickname}` не найден в Minecraft.", ephemeral=True)
         return
+    uuid_clean = uuid.replace("-", "")
     if uuid_clean not in users_data["players"]:
         await interaction.followup.send(f"❌ Игрок `{nickname}` не зарегистрирован на сервере.", ephemeral=True)
         return
@@ -382,331 +518,1206 @@ async def вход(interaction: discord.Interaction, nickname: str, password: st
             f"Теперь вы можете использовать `/lk` для просмотра профиля.",
             ephemeral=True
         )
-        await send_log(interaction.guild, "🔗 Привязка Discord", f"Пользователь {interaction.user.mention} привязал аккаунт {nickname}", color=0x2ecc71)
+        await send_log(interaction.guild, "🔗 Привязка Discord", f"Пользователь {interaction.user.mention} привязал аккаунт {nickname} (UUID: {uuid_clean})", color=0x2ecc71)
     else:
         await interaction.followup.send("❌ Ошибка сохранения данных на сервере. Обратитесь к администрации.", ephemeral=True)
 
-@app_commands.command(name="addgroup", description="👑 Выдать группу игроку")
-@app_commands.describe(nickname="Ник игрока", group="Название группы", duration="Время (1d, 2h, 30m, 10s) или оставьте пустым для бессрочной")
-async def addgroup(interaction: discord.Interaction, nickname: str, group: str, duration: str = None):
-    if interaction.channel.id != LK_CHANNEL_ID:
-        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
-        return
-    if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
-        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
-        return
-    await interaction.response.defer(ephemeral=True)
-    users_data = await get_users_yml_sftp()
-    if not users_data or "players" not in users_data:
-        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
-        return
-    found = await find_player_in_users(nickname, users_data)
-    if not found:
-        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
-        return
-    uuid, data = found
-    groups = data.get("groups", [])
-    for g in groups:
-        if g.get("name") == group:
-            await interaction.followup.send(f"❌ У игрока уже есть группа `{group}`. Сначала удалите её.")
-            return
-    expire = -1
-    duration_str = "бессрочно"
-    if duration:
-        seconds = parse_time_duration(duration)
-        if seconds == -1:
-            await interaction.followup.send("❌ Неверный формат времени. Используйте: 1d, 2h, 30m, 10s")
-            return
-        expire = int((datetime.now(MSK) + timedelta(seconds=seconds)).timestamp() * 1000)
-        duration_str = duration
-    groups.append({"name": group, "expire": expire})
-    users_data["players"][uuid]["groups"] = groups
-    if await put_users_yml_sftp(users_data):
-        await interaction.followup.send(f"✅ Группа `{group}` выдана игроку **{nickname}** (срок: {duration_str})")
-        await send_log(interaction.guild, "👑 Выдана группа", f"Руководство {interaction.user.mention} выдал группу `{group}` игроку **{nickname}** (срок: {duration_str})", color=0xf1c40f)
-    else:
-        await interaction.followup.send("❌ Ошибка сохранения данных.")
+@app_commands.command(name="chance", description="🎲 Узнать вероятность события (0% - 100%)")
+async def chance(interaction: discord.Interaction, question: str):
+    percentage = random.randint(0, 100)
+    await interaction.response.send_message(make_blockquote(f"🎲 **Вопрос:** *{question}*\n📊 **Вероятность:** `{percentage}%`"))
 
-@app_commands.command(name="removegroup", description="🗑️ Удалить группу у игрока")
-@app_commands.describe(nickname="Ник игрока", group="Название группы")
-async def removegroup(interaction: discord.Interaction, nickname: str, group: str):
-    if interaction.channel.id != LK_CHANNEL_ID:
-        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
-        return
-    if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
-        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+@app_commands.command(name="sync", description="Синхронизировать слэш-команды бота (guild или global)")
+async def sync_cmd(interaction: discord.Interaction, scope: str = "guild"):
+    if interaction.user.id != 1437779380184158249:
+        await interaction.response.send_message("❌ Доступно только Создателю.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
-    users_data = await get_users_yml_sftp()
-    if not users_data or "players" not in users_data:
-        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
-        return
-    found = await find_player_in_users(nickname, users_data)
-    if not found:
-        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
-        return
-    uuid, data = found
-    groups = data.get("groups", [])
-    original_len = len(groups)
-    groups = [g for g in groups if g.get("name") != group]
-    if len(groups) == original_len:
-        await interaction.followup.send(f"❌ У игрока нет группы `{group}`.")
-        return
-    users_data["players"][uuid]["groups"] = groups
-    if await put_users_yml_sftp(users_data):
-        await interaction.followup.send(f"✅ Группа `{group}` удалена у игрока **{nickname}**")
-        await send_log(interaction.guild, "🗑️ Удалена группа", f"Руководство {interaction.user.mention} удалил группу `{group}` у игрока **{nickname}**", color=0xe74c3c)
-    else:
-        await interaction.followup.send("❌ Ошибка сохранения данных.")
-
-@app_commands.command(name="listgroups", description="📋 Показать все группы игрока")
-@app_commands.describe(nickname="Ник игрока")
-async def listgroups(interaction: discord.Interaction, nickname: str):
-    if interaction.channel.id != LK_CHANNEL_ID:
-        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
-        return
-    if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
-        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
-        return
-    await interaction.response.defer(ephemeral=True)
-    users_data = await get_users_yml_sftp()
-    if not users_data or "players" not in users_data:
-        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
-        return
-    found = await find_player_in_users(nickname, users_data)
-    if not found:
-        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
-        return
-    uuid, data = found
-    groups = data.get("groups", [])
-    if not groups:
-        await interaction.followup.send(f"У игрока **{nickname}** нет групп.")
-        return
-    lines = []
-    for g in groups:
-        gname = g.get("name", "unknown")
-        expire = g.get("expire", -1)
-        if expire == -1:
-            lines.append(f"• {gname} (бессрочно)")
+    try:
+        if scope.lower() == "guild":
+            interaction.client.tree.copy_global_to(guild=interaction.guild)
+            synced = await interaction.client.tree.sync(guild=interaction.guild)
+            await interaction.followup.send(f"⚡ Слэш-команды гильдии синхронизированы! Загружено: `{len(synced)}`", ephemeral=True)
         else:
-            expire_date = datetime.fromtimestamp(expire / 1000).strftime("%d.%m.%Y %H:%M")
-            lines.append(f"• {gname} (до {expire_date})")
+            synced = await interaction.client.tree.sync()
+            await interaction.followup.send(f"🌐 Глобальная синхронизация запущена! Загружено: `{len(synced)}`.", ephemeral=True)
+        await send_log(interaction.guild, "⚡ Выполнена Синхронизация", f"Создатель {interaction.user.mention} выполнил `/sync` (Режим: `{scope}`).", color=0x2ecc71)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Ошибка: `{e}`", ephemeral=True)
+
+@app_commands.command(name="test_welcome", description="Протестировать баннер приветствия в канале")
+async def test_welcome(interaction: discord.Interaction):
+    if interaction.user.id != 1437779380184158249:
+        return
+    await interaction.response.defer(ephemeral=True)
+    banner_file = create_welcome_banner(interaction.user.display_name)
     embed = discord.Embed(
-        title=f"📋 Группы игрока {nickname}",
-        description="\n".join(lines),
+        title="👑 Новый Странник ступил в Kingdom of Joy!",
+        description=f"Приветствуем тебя, {interaction.user.mention}!\nЗагляни в <#1520119059566559282> для навигации.",
+        color=0x7864c8,
+        timestamp=datetime.now(MSK)
+    )
+    embed.set_image(url="attachment://welcome_banner.png")
+    view = WelcomeButtonsView(interaction.guild_id)
+    await interaction.channel.send(content=f"👋 {interaction.user.mention}", embed=embed, file=banner_file, view=view)
+    await interaction.followup.send("✅ Приветствие отправлено!", ephemeral=True)
+
+@app_commands.command(name="remind", description="Установить напоминание (Время в формате МСК)")
+async def remind(interaction: discord.Interaction, time: str, text: str):
+    unix_time = parse_time_or_unix(time)
+    reminders = load_json(REMINDERS_FILE, [])
+    reminders.append({"user_id": interaction.user.id, "channel_id": interaction.channel_id, "unix": unix_time, "text": text})
+    save_json(REMINDERS_FILE, reminders)
+    await interaction.response.send_message(make_blockquote(f"⏰ Напоминание записано на <t:{unix_time}:R>!"), ephemeral=True)
+
+@app_commands.command(name="badwords", description="Настройка фильтра слов")
+async def badwords(interaction: discord.Interaction, words: str, mute_time: str = "1h"):
+    if not (interaction.user.id == 1437779380184158249 or any(r.id in [CREATOR_ROLE_ID, FOUNDER_ROLE_ID] for r in interaction.user.roles)):
+        return
+    word_list = [w.strip().lower() for w in words.split(",") if w.strip()]
+    save_json(BADWORDS_FILE, {"words": word_list, "mute_time": mute_time})
+    await interaction.response.send_message(f"✅ Фильтр обновлен: `{', '.join(word_list)}` | Мут: **{mute_time}**", ephemeral=True)
+    await send_log(interaction.guild, "⚙️ Фильтр Слов Обновлен", f"Модератор {interaction.user.mention} установил фильтр: `{', '.join(word_list)}`", color=0x34495e)
+
+@app_commands.command(name="warnlist", description="Список предупреждений")
+async def warnlist(interaction: discord.Interaction):
+    warns = load_json(WARNS_FILE, {})
+    lines = [f"• <@{uid}>: **{count}/3** варнов" for uid, count in warns.items() if count > 0]
+    await interaction.response.send_message(embed=discord.Embed(title="📜 Предупреждения", description="\n".join(lines) if lines else "Нет активных варнов.", color=0xe74c3c), ephemeral=True)
+
+@app_commands.command(name="role", description="Выдать временную роль (например 10m, 2h)")
+async def give_temp_role(interaction: discord.Interaction, user: discord.Member, role: discord.Role, duration: str):
+    if not interaction.client.is_allowed_staff(interaction):
+        return
+    if is_high_staff(user):
+        await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
+        return
+    await user.add_roles(role)
+    delta = parse_duration(duration)
+    await interaction.response.send_message(make_blockquote(f"✅ Роль {role.mention} выдана {user.mention} на **{duration}**."))
+    await send_log(interaction.guild, "🎭 Выдана Временная Роль", f"Модератор: {interaction.user.mention}\nЦель: {user.mention}\nРоль: {role.mention}\nСрок: `{duration}`", color=0x9b59b6)
+    async def remove_later():
+        await asyncio.sleep(delta.total_seconds())
+        try:
+            await user.remove_roles(role)
+            await send_log(interaction.guild, "🎭 Снята Временная Роль", f"Роль {role.mention} у {user.mention} истекла и была снята.", color=0x95a5a6)
+        except Exception:
+            pass
+    asyncio.create_task(remove_later())
+
+@app_commands.command(name="warn", description="Выдать варн")
+async def warn(interaction: discord.Interaction, user: discord.Member, reason: str = "Нарушение"):
+    bot = interaction.client
+    if not bot.is_allowed_staff(interaction) or not bot.check_hierarchy(interaction.user, user):
+        return
+    if is_high_staff(user):
+        await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
+        return
+    warns = load_json(WARNS_FILE, {})
+    uid = str(user.id)
+    count = warns.get(uid, 0) + 1
+    if count >= 3:
+        warns[uid] = 0
+        save_json(WARNS_FILE, warns)
+        await user.timeout(timedelta(days=1), reason="3/3 варна")
+        await interaction.response.send_message(make_blockquote(f"⚡ {user.mention} получил 3/3 варнов и замучен на 1 день!"))
+        await send_log(interaction.guild, "⛔ Авто-Мут (3/3 Варна)", f"Пользователь {user.mention} набрал 3 варна и отправлен в мут на 24 часа.", color=0xc0392b)
+    else:
+        warns[uid] = count
+        save_json(WARNS_FILE, warns)
+        await interaction.response.send_message(make_blockquote(f"⚠️ {user.mention} получил варн **({count}/3)**. Причина: *{reason}*"))
+        await send_log(interaction.guild, "⚠️ Выдан Варн", f"Модератор: {interaction.user.mention}\nНарушитель: {user.mention}\nВарны: `{count}/3`\nПричина: *{reason}*", color=0xe67e22)
+
+@app_commands.command(name="unwarn", description="Снять варн")
+async def unwarn(interaction: discord.Interaction, user: discord.Member):
+    if not interaction.client.is_allowed_staff(interaction):
+        return
+    warns = load_json(WARNS_FILE, {})
+    uid = str(user.id)
+    if warns.get(uid, 0) > 0:
+        warns[uid] -= 1
+        save_json(WARNS_FILE, warns)
+        await interaction.response.send_message(make_blockquote(f"✅ Варн снят с {user.mention}. Осталось: **{warns[uid]}/3**"))
+        await send_log(interaction.guild, "🟢 Снят Варн", f"Модератор {interaction.user.mention} снял варн с {user.mention}. Остаток: `{warns[uid]}/3`", color=0x2ecc71)
+
+@app_commands.command(name="mute", description="Мут")
+async def mute(interaction: discord.Interaction, user: discord.Member, time: str, reason: str = "Нарушение"):
+    if not interaction.client.is_allowed_staff(interaction):
+        return
+    if is_high_staff(user):
+        await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
+        return
+    duration = parse_duration(time)
+    await user.timeout(duration, reason=reason)
+    await interaction.response.send_message(make_blockquote(f"🔇 {user.mention} отправлен в мут на **{time}**."))
+    await send_log(interaction.guild, "🔇 Выдан Мут", f"Модератор: {interaction.user.mention}\nНарушитель: {user.mention}\nСрок: `{time}`\nПричина: *{reason}*", color=0xe74c3c)
+
+@app_commands.command(name="unmute", description="Размут")
+async def unmute(interaction: discord.Interaction, user: discord.Member):
+    if not interaction.client.is_allowed_staff(interaction):
+        return
+    await user.timeout(None)
+    await interaction.response.send_message(make_blockquote(f"🔊 {user.mention} размучен."))
+    await send_log(interaction.guild, "🔊 Размут", f"Модератор {interaction.user.mention} размутил пользователя {user.mention}.", color=0x2ecc71)
+
+@app_commands.command(name="ban", description="Бан")
+async def ban(interaction: discord.Interaction, user: discord.Member, reason: str = "Нарушение"):
+    if not interaction.client.is_allowed_staff(interaction):
+        return
+    if is_high_staff(user):
+        await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
+        return
+    await user.ban(reason=reason)
+    await interaction.response.send_message(make_blockquote(f"🚫 {user.mention} забанен."))
+    await send_log(interaction.guild, "🚫 Бан", f"Модератор {interaction.user.mention} забанил {user.mention}.\nПричина: *{reason}*", color=0x900c3f)
+
+@app_commands.command(name="unban", description="Разбан")
+async def unban(interaction: discord.Interaction, user_id: str):
+    if not interaction.client.is_allowed_staff(interaction):
+        return
+    user = await interaction.client.fetch_user(int(user_id))
+    await interaction.guild.unban(user)
+    await interaction.response.send_message(make_blockquote(f"🔓 Пользователь **{user.name}** разбанен."))
+    await send_log(interaction.guild, "🔓 Разбан", f"Модератор {interaction.user.mention} разбанил {user.name} (ID: `{user.id}`).", color=0x2ecc71)
+
+@app_commands.command(name="delete", description="Очистка чата")
+async def delete(interaction: discord.Interaction, amount: str):
+    if not interaction.client.is_allowed_staff(interaction):
+        return
+    await interaction.response.defer(ephemeral=True)
+    limit = 1000 if amount.lower() == "all" else int(amount)
+    deleted = await interaction.channel.purge(limit=limit)
+    await interaction.followup.send(make_blockquote(f"🧹 Удалено {len(deleted)} сообщений."), ephemeral=True)
+    await send_log(interaction.guild, "🧹 Очистка ЧАТА", f"Модератор {interaction.user.mention} очистил `{len(deleted)}` сообщений в канале {interaction.channel.mention}.", color=0x34495e)
+
+@app_commands.command(name="staff", description="Состав Администрации")
+async def staff(interaction: discord.Interaction):
+    guild = interaction.guild
+    await guild.chunk()
+    founders, creators, moderators = [], [], []
+    for m in guild.members:
+        rids = [r.id for r in m.roles]
+        if FOUNDER_ROLE_ID in rids:
+            founders.append(m)
+        elif CREATOR_ROLE_ID in rids or m.id == 1437779380184158249:
+            creators.append(m)
+        elif MODERATOR_ROLE_ID in rids:
+            moderators.append(m)
+    embed = discord.Embed(title="🛡️ Администрация Kingdom of Joy", color=0x2b2d31, timestamp=datetime.now(MSK))
+    embed.add_field(name="👑 1. Основатели", value="\n".join([f"• <@{m.id}>" for m in founders]) if founders else "• *Нет*", inline=False)
+    embed.add_field(name="✨ 2. Создатели", value="\n".join([f"• <@{m.id}>" for m in creators]) if creators else "• *Нет*", inline=False)
+    embed.add_field(name="🛡️ 3. Модераторы", value="\n".join([f"• <@{m.id}>" for m in moderators]) if moderators else "• *Нет*", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+@app_commands.command(name="setup_support", description="Обновить и выставить монументальную панель поддержки")
+async def setup_support(interaction: discord.Interaction):
+    if interaction.user.id != 1437779380184158249:
+        return
+    await interaction.response.defer(ephemeral=True)
+    channel = interaction.guild.get_channel(SUPPORT_CHANNEL_ID)
+    if not channel:
+        await interaction.followup.send("❌ Канал поддержки не найден!", ephemeral=True)
+        return
+    embed = discord.Embed(
+        title="✨ **ЦЕНТР ПОДДЕРЖКИ И УПРАВЛЕНИЯ «KINGDOM OF JOY»**",
+        description=(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Приветствуем вас в официальном центре обращений нашего сервера!\n"
+            "Здесь вы можете связаться с руководством, заявить о нарушении или предложить идею.\n\n"
+            "📌 **ОБЩИЙ СВОД ПРАВИЛ ПОДАЧИ ОБРАЩЕНИЙ:**\n"
+            "• **Уважение:** Излагайте суть обращения спокойно и вежливо.\n"
+            "• **Доказательства:** В случае жалобы сразу прикрепляйте медиафайлы.\n"
+            "• **Терпение:** Ответственные сотрудники отреагируют в ближайшее время.\n"
+            "• **Запрещено:** Создавать ложные тикеты, флудить и спамить кнопками.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=0x7864c8,
+        timestamp=datetime.now(MSK)
+    )
+    embed.add_field(name="⚠️ **1. Отдел Жалоб**", value="Подача претензий на игроков или членов администрации. Обязательны прямые доказательства.", inline=False)
+    embed.add_field(name="💡 **2. Предложить Идею**", value="Отправка ваших уникальных идей по улучшению дискорда, ивентов и игровых серверов.", inline=False)
+    embed.add_field(name="💎 **3. Поддержка и Донат**", value="Вопросы по покупке привилегий, подпискам, спонсорству и развитию проекта.", inline=False)
+    embed.add_field(name="💻 **4. Технический Разработчик**", value="Прямая связь с разработчиком бота и технической части серверов для багрепортов.", inline=False)
+    embed.add_field(name="👑 **5. Высшее Руководство**", value="Приватный сектор общения лично с Создателем и Основателями проекта.", inline=False)
+    embed.set_image(url="attachment://support_banner.png")
+    embed.set_footer(text="Kingdom of Joy | Support System", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+    banner_file = create_support_banner()
+    msg = await channel.send(embed=embed, file=banner_file, view=SupportHubView())
+    save_json(SUPPORT_CONFIG_FILE, {"support_message_id": msg.id})
+    await interaction.followup.send("✅ Монументальная панель поддержки успешно отправлена и настроена!", ephemeral=True)
+
+@app_commands.command(name="setup_applications", description="Настроить канал заявок (отправить сообщение с кнопками)")
+async def setup_applications(interaction: discord.Interaction):
+    if interaction.user.id != 1437779380184158249:
+        await interaction.response.send_message("❌ Доступно только Создателю.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    channel = interaction.guild.get_channel(APPLICATIONS_CHANNEL_ID)
+    if not channel:
+        await interaction.followup.send("❌ Канал заявок не найден!", ephemeral=True)
+        return
+    embed = discord.Embed(
+        title="📩 **Подача заявок на должности**",
+        description=(
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Здесь вы можете подать заявку на одну из следующих должностей:\n\n"
+            "🗺️ **Маппер** – создание карт и уровней.\n"
+            "🛡️ **Модератор чата** – поддержание порядка в общем чате.\n"
+            "🎬 **Киноклуб** – организация совместных просмотров фильмов.\n"
+            "👩 **Девушка** – получение специального статуса.\n\n"
+            "📌 **Инструкция:**\n"
+            "1. Выберите тип заявки в меню ниже.\n"
+            "2. Заполните анкету (все поля обязательны).\n"
+            "3. После отправки ваша заявка будет рассмотрена высшим составом.\n"
+            "4. Решение будет принято в течение нескольких дней.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
         color=0x5865F2,
         timestamp=datetime.now(MSK)
     )
-    await interaction.followup.send(embed=embed)
+    embed.set_footer(text="Kingdom of Joy | Applications", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+    view = ApplicationView()
+    await channel.send(embed=embed, view=view)
+    await interaction.followup.send("✅ Сообщение с заявками отправлено в канал!", ephemeral=True)
 
-@app_commands.command(name="setbalance", description="💰 Установить баланс игроку")
-@app_commands.describe(nickname="Ник игрока", amount="Сумма")
-async def setbalance(interaction: discord.Interaction, nickname: str, amount: float):
-    if interaction.channel.id != LK_CHANNEL_ID:
-        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
+@app_commands.command(name="messages", description="📊 Показать количество сообщений и уровень")
+@app_commands.describe(user="Пользователь (оставьте пустым для себя)")
+async def messages(interaction: discord.Interaction, user: discord.Member = None):
+    if interaction.channel.id != BOT_CHANNEL:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{BOT_CHANNEL}>.", ephemeral=True)
         return
-    if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
-        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
-        return
-    if amount < 0:
-        await interaction.response.send_message("❌ Сумма не может быть отрицательной.", ephemeral=True)
-        return
-    await interaction.response.defer(ephemeral=True)
-    users_data = await get_users_yml_sftp()
-    if not users_data or "players" not in users_data:
-        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
-        return
-    found = await find_player_in_users(nickname, users_data)
-    if not found:
-        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
-        return
-    uuid, data = found
-    users_data["players"][uuid]["balance"] = amount
-    if await put_users_yml_sftp(users_data):
-        await interaction.followup.send(f"✅ Баланс игрока **{nickname}** установлен на `{amount:.2f}` монет")
-        await send_log(interaction.guild, "💰 Установлен баланс", f"Руководство {interaction.user.mention} установил баланс игрока **{nickname}** = {amount:.2f}", color=0x2ecc71)
-    else:
-        await interaction.followup.send("❌ Ошибка сохранения данных.")
+    target = user or interaction.user
+    counts = load_message_counts()
+    count = counts.get(str(target.id), 0)
+    level = get_level(count)
 
-@app_commands.command(name="addbalance", description="➕ Добавить монеты игроку")
-@app_commands.describe(nickname="Ник игрока", amount="Сумма")
-async def addbalance(interaction: discord.Interaction, nickname: str, amount: float):
-    if interaction.channel.id != LK_CHANNEL_ID:
-        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
-        return
-    if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
-        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
-        return
-    if amount <= 0:
-        await interaction.response.send_message("❌ Сумма должна быть больше 0.", ephemeral=True)
-        return
-    await interaction.response.defer(ephemeral=True)
-    users_data = await get_users_yml_sftp()
-    if not users_data or "players" not in users_data:
-        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
-        return
-    found = await find_player_in_users(nickname, users_data)
-    if not found:
-        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
-        return
-    uuid, data = found
-    current = data.get("balance", 0.0)
-    users_data["players"][uuid]["balance"] = current + amount
-    if await put_users_yml_sftp(users_data):
-        await interaction.followup.send(f"✅ Добавлено `{amount:.2f}` монет игроку **{nickname}** (теперь: {current + amount:.2f})")
-        await send_log(interaction.guild, "➕ Добавлены монеты", f"Руководство {interaction.user.mention} добавил {amount:.2f} монет игроку **{nickname}**", color=0x2ecc71)
-    else:
-        await interaction.followup.send("❌ Ошибка сохранения данных.")
+    embed = discord.Embed(
+        title=f"📊 Статистика сообщений",
+        color=0x5865F2,
+        timestamp=datetime.now(MSK)
+    )
+    embed.add_field(name="👤 Пользователь", value=target.mention, inline=False)
+    embed.add_field(name="✉️ Сообщений", value=f"`{count}`", inline=True)
+    embed.add_field(name="🏆 Уровень", value=f"`{level}` из 20", inline=True)
+    embed.set_footer(text="Kingdom of Joy | Статистика", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+    await interaction.response.send_message(embed=embed)
 
-@app_commands.command(name="takebalance", description="➖ Снять монеты у игрока")
-@app_commands.describe(nickname="Ник игрока", amount="Сумма")
-async def takebalance(interaction: discord.Interaction, nickname: str, amount: float):
-    if interaction.channel.id != LK_CHANNEL_ID:
-        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
+@app_commands.command(name="top", description="🏆 Топ-10 по сообщениям")
+async def top(interaction: discord.Interaction):
+    if interaction.channel.id != BOT_CHANNEL:
+        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{BOT_CHANNEL}>.", ephemeral=True)
         return
-    if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
-        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
+    counts = load_message_counts()
+    if not counts:
+        await interaction.response.send_message("❌ Нет данных.")
         return
-    if amount <= 0:
-        await interaction.response.send_message("❌ Сумма должна быть больше 0.", ephemeral=True)
-        return
-    await interaction.response.defer(ephemeral=True)
-    users_data = await get_users_yml_sftp()
-    if not users_data or "players" not in users_data:
-        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
-        return
-    found = await find_player_in_users(nickname, users_data)
-    if not found:
-        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
-        return
-    uuid, data = found
-    current = data.get("balance", 0.0)
-    if current < amount:
-        await interaction.followup.send(f"❌ У игрока **{nickname}** недостаточно монет (есть: {current:.2f})")
-        return
-    users_data["players"][uuid]["balance"] = current - amount
-    if await put_users_yml_sftp(users_data):
-        await interaction.followup.send(f"✅ Снято `{amount:.2f}` монет у игрока **{nickname}** (осталось: {current - amount:.2f})")
-        await send_log(interaction.guild, "➖ Сняты монеты", f"Руководство {interaction.user.mention} снял {amount:.2f} монет у игрока **{nickname}**", color=0xe74c3c)
-    else:
-        await interaction.followup.send("❌ Ошибка сохранения данных.")
 
-@app_commands.command(name="setrelic", description="💎 Установить реликвии игроку")
-@app_commands.describe(nickname="Ник игрока", amount="Количество")
-async def setrelic(interaction: discord.Interaction, nickname: str, amount: int):
-    if interaction.channel.id != LK_CHANNEL_ID:
-        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
-        return
-    if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
-        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
-        return
-    if amount < 0:
-        await interaction.response.send_message("❌ Количество не может быть отрицательным.", ephemeral=True)
-        return
-    await interaction.response.defer(ephemeral=True)
-    users_data = await get_users_yml_sftp()
-    if not users_data or "players" not in users_data:
-        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
-        return
-    found = await find_player_in_users(nickname, users_data)
-    if not found:
-        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
-        return
-    uuid, data = found
-    users_data["players"][uuid]["relics"] = amount
-    if await put_users_yml_sftp(users_data):
-        await interaction.followup.send(f"✅ Реликвии игрока **{nickname}** установлены на `{amount}` шт.")
-        await send_log(interaction.guild, "💎 Установлены реликвии", f"Руководство {interaction.user.mention} установил реликвии игрока **{nickname}** = {amount}", color=0x9b59b6)
-    else:
-        await interaction.followup.send("❌ Ошибка сохранения данных.")
+    sorted_users = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
+    embed = discord.Embed(
+        title="🏆 Топ-10 по сообщениям",
+        color=0xf1c40f,
+        timestamp=datetime.now(MSK)
+    )
+    medals = ["🥇", "🥈", "🥉"]
+    description = ""
+    for i, (user_id, count) in enumerate(sorted_users):
+        try:
+            user = await interaction.client.fetch_user(int(user_id))
+            name = user.display_name
+        except:
+            name = f"Неизвестный ({user_id})"
+        medal = medals[i] if i < 3 else f"`#{i+1}`"
+        description += f"{medal} **{name}** — `{count}` сообщений\n"
+    embed.description = description
+    embed.set_footer(text="Kingdom of Joy | Топ", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+    await interaction.response.send_message(embed=embed)
 
-@app_commands.command(name="addrelic", description="➕ Добавить реликвии игроку")
-@app_commands.describe(nickname="Ник игрока", amount="Количество")
-async def addrelic(interaction: discord.Interaction, nickname: str, amount: int):
-    if interaction.channel.id != LK_CHANNEL_ID:
-        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
-        return
-    if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
-        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
-        return
-    if amount <= 0:
-        await interaction.response.send_message("❌ Количество должно быть больше 0.", ephemeral=True)
-        return
+@app_commands.command(name="setmessages", description="⚙️ Установить точное количество сообщений пользователю")
+@app_commands.describe(user="Пользователь", count="Новое количество")
+async def setmessages(interaction: discord.Interaction, user: discord.Member, count: int):
     await interaction.response.defer(ephemeral=True)
-    users_data = await get_users_yml_sftp()
-    if not users_data or "players" not in users_data:
-        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
-        return
-    found = await find_player_in_users(nickname, users_data)
-    if not found:
-        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
-        return
-    uuid, data = found
-    current = data.get("relics", 0)
-    users_data["players"][uuid]["relics"] = current + amount
-    if await put_users_yml_sftp(users_data):
-        await interaction.followup.send(f"✅ Добавлено `{amount}` реликвий игроку **{nickname}** (теперь: {current + amount})")
-        await send_log(interaction.guild, "➕ Добавлены реликвии", f"Руководство {interaction.user.mention} добавил {amount} реликвий игроку **{nickname}**", color=0x9b59b6)
-    else:
-        await interaction.followup.send("❌ Ошибка сохранения данных.")
+    try:
+        if not any(r.id == 1526681612337549343 for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
+            await interaction.followup.send("❌ Доступно только руководству проекта.", ephemeral=True)
+            return
+        if count < 0:
+            await interaction.followup.send("❌ Количество не может быть отрицательным.", ephemeral=True)
+            return
 
-@app_commands.command(name="takerelic", description="➖ Снять реликвии у игрока")
-@app_commands.describe(nickname="Ник игрока", amount="Количество")
-async def takerelic(interaction: discord.Interaction, nickname: str, amount: int):
-    if interaction.channel.id != LK_CHANNEL_ID:
-        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
-        return
-    if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
-        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
-        return
-    if amount <= 0:
-        await interaction.response.send_message("❌ Количество должно быть больше 0.", ephemeral=True)
-        return
-    await interaction.response.defer(ephemeral=True)
-    users_data = await get_users_yml_sftp()
-    if not users_data or "players" not in users_data:
-        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
-        return
-    found = await find_player_in_users(nickname, users_data)
-    if not found:
-        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
-        return
-    uuid, data = found
-    current = data.get("relics", 0)
-    if current < amount:
-        await interaction.followup.send(f"❌ У игрока **{nickname}** недостаточно реликвий (есть: {current})")
-        return
-    users_data["players"][uuid]["relics"] = current - amount
-    if await put_users_yml_sftp(users_data):
-        await interaction.followup.send(f"✅ Снято `{amount}` реликвий у игрока **{nickname}** (осталось: {current - amount})")
-        await send_log(interaction.guild, "➖ Сняты реликвии", f"Руководство {interaction.user.mention} снял {amount} реликвий у игрока **{nickname}**", color=0xe74c3c)
-    else:
-        await interaction.followup.send("❌ Ошибка сохранения данных.")
+        counts = load_message_counts()
+        counts[str(user.id)] = count
+        save_message_counts(counts)
 
-@app_commands.command(name="resetplayer", description="🔄 Сбросить все данные игрока (группы, баланс, реликвии)")
-@app_commands.describe(nickname="Ник игрока")
-async def resetplayer(interaction: discord.Interaction, nickname: str):
-    if interaction.channel.id != LK_CHANNEL_ID:
-        await interaction.response.send_message(f"❌ Эта команда доступна только в канале <#{LK_CHANNEL_ID}>.", ephemeral=True)
-        return
-    if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
-        await interaction.response.send_message("❌ Доступно только руководству проекта.", ephemeral=True)
-        return
+        await update_user_level(interaction.client, user, count, interaction.channel)
+
+        await interaction.followup.send(f"✅ Пользователю {user.mention} установлено `{count}` сообщений.", ephemeral=True)
+        await send_log(interaction.guild, "⚙️ Установлено сообщений", f"Руководство {interaction.user.mention} установило {user.mention} сообщений = {count}", color=0x3498db)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+
+@app_commands.command(name="addmessages", description="➕ Добавить сообщения пользователю")
+@app_commands.describe(user="Пользователь", amount="Количество для добавления")
+async def addmessages(interaction: discord.Interaction, user: discord.Member, amount: int):
     await interaction.response.defer(ephemeral=True)
-    users_data = await get_users_yml_sftp()
-    if not users_data or "players" not in users_data:
-        await interaction.followup.send("❌ Ошибка чтения базы игроков.")
+    try:
+        if not any(r.id == 1526681612337549343 for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
+            await interaction.followup.send("❌ Доступно только руководству проекта.", ephemeral=True)
+            return
+        if amount < 0:
+            await interaction.followup.send("❌ Количество не может быть отрицательным.", ephemeral=True)
+            return
+
+        counts = load_message_counts()
+        current = counts.get(str(user.id), 0)
+        new_count = current + amount
+        counts[str(user.id)] = new_count
+        save_message_counts(counts)
+
+        await update_user_level(interaction.client, user, new_count, interaction.channel)
+
+        await interaction.followup.send(f"✅ Пользователю {user.mention} добавлено `{amount}` сообщений. Теперь: `{new_count}`.", ephemeral=True)
+        await send_log(interaction.guild, "➕ Добавлены сообщения", f"Руководство {interaction.user.mention} добавил {user.mention} +{amount} сообщений (теперь {new_count})", color=0x2ecc71)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+
+@app_commands.command(name="resetmessages", description="🔄 Обнулить счётчики всем авторизованным пользователям (дать 1 уровень)")
+async def resetmessages(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        if not any(r.id == 1526681612337549343 for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
+            await interaction.followup.send("❌ Доступно только руководству проекта.", ephemeral=True)
+            return
+
+        await interaction.followup.send("⚠️ Вы уверены, что хотите обнулить счётчики ВСЕМ авторизованным пользователям? Напишите `подтвердить` в течение 30 секунд.", ephemeral=True)
+
+        def check(msg):
+            return msg.author == interaction.user and msg.content.lower() == "подтвердить" and msg.channel == interaction.channel
+
+        try:
+            await interaction.client.wait_for("message", timeout=30.0, check=check)
+        except asyncio.TimeoutError:
+            await interaction.followup.send("❌ Операция отменена (таймаут).", ephemeral=True)
+            return
+
+        counts = load_message_counts()
+        guild = interaction.guild
+        role_1 = guild.get_role(ROLE_1)
+        role_5 = guild.get_role(ROLE_5)
+        role_10 = guild.get_role(ROLE_10)
+        role_15 = guild.get_role(ROLE_15)
+        role_20 = guild.get_role(ROLE_20)
+
+        for user_id in list(counts.keys()):
+            member = guild.get_member(int(user_id))
+            if member and VERIFY_ROLE_ID in [r.id for r in member.roles]:
+                counts[user_id] = 0
+                await member.remove_roles(role_1, role_5, role_10, role_15, role_20, reason="Обнуление счётчика сообщений")
+                if role_1:
+                    await member.add_roles(role_1, reason="Обнуление счётчика сообщений (уровень 1)")
+                interaction.client.user_level_cache[member.id] = 1
+        save_message_counts(counts)
+
+        await interaction.followup.send("✅ Счётчики всех авторизованных пользователей обнулены, выдана роль 1 уровня.", ephemeral=True)
+        await send_log(interaction.guild, "🔄 Обнуление счётчиков", f"Руководство {interaction.user.mention} обнулило счётчики всех авторизованных.", color=0xe67e22)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
+
+@app_commands.command(name="send", description="📨 Отправить объявление/сообщение в канал (только для руководства)")
+@app_commands.describe(text="Текст сообщения", color="Цвет в HEX (например #ff0000)")
+async def send_cmd(interaction: discord.Interaction, text: str, color: str = None):
+    if not any(r.id == 1526681612337549343 for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
+        await interaction.response.send_message("❌ У вас нет прав на использование этой команды.", ephemeral=True)
         return
-    found = await find_player_in_users(nickname, users_data)
-    if not found:
-        await interaction.followup.send(f"❌ Игрок `{nickname}` не найден.")
-        return
-    uuid, data = found
-    users_data["players"][uuid]["groups"] = []
-    users_data["players"][uuid]["balance"] = 0.0
-    users_data["players"][uuid]["relics"] = 0
-    if await put_users_yml_sftp(users_data):
-        await interaction.followup.send(f"✅ Данные игрока **{nickname}** сброшены (группы, баланс, реликвии обнулены)")
-        await send_log(interaction.guild, "🔄 Сброс игрока", f"Руководство {interaction.user.mention} сбросил данные игрока **{nickname}**", color=0xe67e22)
-    else:
-        await interaction.followup.send("❌ Ошибка сохранения данных.")
+
+    embed_color = 0x5865F2
+    if color:
+        try:
+            embed_color = int(color.lstrip('#'), 16)
+        except:
+            embed_color = 0x5865F2
+
+    embed = discord.Embed(
+        description=text,
+        color=embed_color,
+        timestamp=datetime.now(MSK)
+    )
+    embed.set_footer(text="Kingdom of Joy | Объявление", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+
+    await interaction.response.send_message(embed=embed)
+    await send_log(interaction.guild, "📨 Отправлено объявление", f"Руководство {interaction.user.mention} отправил объявление в канале {interaction.channel.mention}", color=embed_color)
+
+# ==================== UI КОМПОНЕНТЫ ====================
+class WelcomeButtonsView(discord.ui.View):
+    def __init__(self, guild_id: int = 0):
+        super().__init__(timeout=None)
+        g_id = guild_id if guild_id else '@me'
+        self.add_item(discord.ui.Button(
+            label="📢 Новости",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{g_id}/1505126425022300275",
+            row=0
+        ))
+        self.add_item(discord.ui.Button(
+            label="💬 Основной Чат",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{g_id}/1505239843486306374",
+            row=0
+        ))
+        self.add_item(discord.ui.Button(
+            label="🗺️ Навигация",
+            style=discord.ButtonStyle.link,
+            url=f"https://discord.com/channels/{g_id}/1520119059566559282",
+            row=0
+        ))
+
+class IdeaModal(discord.ui.Modal, title="💡 Подача предложения"):
+    idea_title = discord.ui.TextInput(label="Суть идеи", placeholder="Кратко изложи суть предложения...", max_length=100)
+    idea_desc = discord.ui.TextInput(label="Подробные детали", placeholder="Опиши детально, как это улучшит проект...", style=discord.TextStyle.paragraph, max_length=1000)
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        thread = await interaction.channel.create_thread(
+            name=f"💡-идея-{interaction.user.name}",
+            type=discord.ChannelType.private_thread,
+            invitable=False
+        )
+        await thread.add_user(interaction.user)
+        await interaction.followup.send(f"✨ Твоё предложение успешно отправлено в личный сектор: {thread.mention}", ephemeral=True)
+        embed = discord.Embed(title=f"💡 Идея от {interaction.user.display_name}", color=0x7864c8, timestamp=datetime.now(MSK))
+        embed.add_field(name="📌 Заголовок", value=self.idea_title.value, inline=False)
+        embed.add_field(name="📝 Детали предложения", value=self.idea_desc.value, inline=False)
+        embed.set_footer(text="Kingdom of Joy | Idea Center", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+        pings = f"<@&{CREATOR_ROLE_ID}> <@&{FOUNDER_ROLE_ID}>"
+        await thread.send(content=f"⚙️ Уведомление Высшему Совету: {pings}", embed=embed, view=IdeaVotingView(), allowed_mentions=discord.AllowedMentions(roles=True, users=True))
+        await send_log(interaction.guild, "💡 Создано Предложение", f"Пользователь {interaction.user.mention} предложил идею в ветке {thread.mention}", color=0x3498db, fields=[("Заголовок", self.idea_title.value, False)])
+
+class IdeaVotingView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.approvals, self.rejections = set(), set()
+    def is_management(self, user: discord.Member) -> bool:
+        return user.id == 1437779380184158249 or any(r.id in [CREATOR_ROLE_ID, FOUNDER_ROLE_ID] for r in user.roles)
+    @discord.ui.button(label="Принять", style=discord.ButtonStyle.success, emoji="✅", custom_id="idea_approve_btn")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_management(interaction.user):
+            await interaction.response.send_message("❌ Доступно только Руководству Kingdom of Joy.", ephemeral=True)
+            return
+        self.approvals.add(interaction.user.id)
+        await interaction.response.send_message("✅ Голос за принятие записан.", ephemeral=True)
+        if len(self.approvals) >= 2 or interaction.user.id == 1437779380184158249:
+            self.stop()
+            await interaction.channel.send(make_blockquote("🟢 **Вердикт Руководства:** Идея официально одобрена и принята в разработку!"))
+            await interaction.channel.edit(locked=True, archived=True)
+            await send_log(interaction.guild, "🟢 Идея Одобрена", f"Идея в канале {interaction.channel.mention} была официально принята.", color=0x2ecc71)
+    @discord.ui.button(label="Отказ", style=discord.ButtonStyle.danger, emoji="❌", custom_id="idea_reject_btn")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.is_management(interaction.user):
+            await interaction.response.send_message("❌ Доступно только Руководству Kingdom of Joy.", ephemeral=True)
+            return
+        self.rejections.add(interaction.user.id)
+        await interaction.response.send_message("❌ Голос за отклонение записан.", ephemeral=True)
+        if len(self.rejections) >= 2 or interaction.user.id == 1437779380184158249:
+            self.stop()
+            await interaction.channel.send(make_blockquote("🔴 **Вердикт Руководства:** Идея отклонена."))
+            await interaction.channel.edit(locked=True, archived=True)
+            await send_log(interaction.guild, "🔴 Идея Отклонена", f"Идея в канале {interaction.channel.mention} была отклонена.", color=0xe74c3c)
+
+class TicketCloseView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label="Запечатать тикет", style=discord.ButtonStyle.secondary, emoji="🔒", custom_id="ticket_close_btn")
+    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("🔒 Сессия завершается... Канал будет запечатан.")
+        await send_log(interaction.guild, "🔒 Тикет Закрыт", f"Тикет {interaction.channel.mention} запечатан {interaction.user.mention}.", color=0x95a5a6)
+        await asyncio.sleep(2)
+        try:
+            await interaction.channel.edit(locked=True, archived=True)
+        except Exception:
+            pass
+
+class SupportHubView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    async def _create_private_ticket(self, interaction: discord.Interaction, prefix: str, title: str, desc: str, ping_roles: list, color: int):
+        await interaction.response.defer(ephemeral=True)
+        thread = await interaction.channel.create_thread(
+            name=f"{prefix}-{interaction.user.name}",
+            type=discord.ChannelType.private_thread,
+            invitable=False
+        )
+        await thread.add_user(interaction.user)
+        await interaction.followup.send(f"🔒 Личный сектор связи успешно создан: {thread.mention}", ephemeral=True)
+        role_pings = " ".join([f"<@&{rid}>" for rid in ping_roles])
+        embed = discord.Embed(
+            title=f"🛡️ {title}",
+            description=(
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"Приветствуем тебя, {interaction.user.mention}!\n\n"
+                f"{desc}\n\n"
+                f"📌 **ПРАВИЛА И РЕКОМЕНДАЦИИ:**\n"
+                f"1. **Изложи суть:** Напиши проблему или вопрос одним полным сообщением.\n"
+                f"2. **Прикрепи доказательства:** Скриншоты, видео или логи (если есть).\n"
+                f"3. **Ожидай ответа:** Ответственные сотрудники уже уведомлены.\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=color,
+            timestamp=datetime.now(MSK)
+        )
+        embed.set_footer(text="Kingdom of Joy | Support Ticket", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+        await thread.send(
+            content=f"🚪 **Новое обращение!** Участник: {interaction.user.mention} | Доступ: {role_pings}",
+            embed=embed,
+            view=TicketCloseView(),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True)
+        )
+        await send_log(interaction.guild, "🎫 Открыт Новый Тикет", f"Пользователь {interaction.user.mention} создал обращение {thread.mention}", color=color, fields=[("Категория", prefix, True)])
+    @discord.ui.button(label="Жалоба", style=discord.ButtonStyle.danger, emoji="⚠️", custom_id="support_complaint_btn", row=0)
+    async def create_complaint(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._create_private_ticket(
+            interaction,
+            "⚠️-жалоба",
+            "Отдел Рассмотрения Правонарушений",
+            "Вы перешли в сектор подачи жалоб. Пожалуйста, опишите причину обращения, укажите никнейм нарушителя и прикрепите прямые доказательства.",
+            [CREATOR_ROLE_ID, FOUNDER_ROLE_ID, COMPLAINTS_DEPT_ROLE_ID],
+            0xd9534f
+        )
+    @discord.ui.button(label="Предложить Идею", style=discord.ButtonStyle.primary, emoji="💡", custom_id="support_idea_btn", row=0)
+    async def create_idea(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(IdeaModal())
+    @discord.ui.button(label="Поддержка / Донат", style=discord.ButtonStyle.success, emoji="💎", custom_id="support_donate_btn", row=0)
+    async def create_donation_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._create_private_ticket(
+            interaction,
+            "💎-донат",
+            "Поддержка и Развитие Проекта",
+            "Здесь вы можете обсудить финансовую поддержку сервера, покупку уникальных ролей, спонсорские привилегии и бонусы.",
+            [CREATOR_ROLE_ID, FOUNDER_ROLE_ID],
+            0x2ecc71
+        )
+    @discord.ui.button(label="Тех. Разработчик", style=discord.ButtonStyle.primary, emoji="💻", custom_id="support_dev_btn", row=1)
+    async def create_dev_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._create_private_ticket(
+            interaction,
+            "💻-разраб",
+            "Технический Раздел и Баги",
+            "Личная линия связи с Техническим Разработчиком. Сообщите о найденных багах, ошибках в ботах или проблемах с игровыми серверами.",
+            [CREATOR_ROLE_ID],
+            0x7864c8
+        )
+    @discord.ui.button(label="Высшее Руководство", style=discord.ButtonStyle.secondary, emoji="👑", custom_id="support_management_btn", row=1)
+    async def create_management_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._create_private_ticket(
+            interaction,
+            "👑-руководство",
+            "Приватный Сектор Высшего Совета",
+            "Прямой канал связи с Создателем и Основателями проекта для решения конфиденциальных, административных и важных вопросов.",
+            [1526681612337549343, FOUNDER_ROLE_ID],
+            0xf1c40f
+        )
+
+class ApplicationSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Маппер", description="Подать заявку на маппера", emoji="🗺️"),
+            discord.SelectOption(label="Модератор чата", description="Подать заявку на модератора", emoji="🛡️"),
+            discord.SelectOption(label="Киноклуб", description="Подать заявку в киноклуб", emoji="🎬"),
+            discord.SelectOption(label="Девушка", description="Получить статус девушки", emoji="👩")
+        ]
+        super().__init__(placeholder="Выберите тип заявки", options=options, custom_id="app_select")
+    async def callback(self, interaction: discord.Interaction):
+        modal = ApplicationModal(self.values[0])
+        await interaction.response.send_modal(modal)
+
+class ApplicationModal(discord.ui.Modal):
+    def __init__(self, app_type: str):
+        super().__init__(title=f"📝 Заявка на {app_type}")
+        self.app_type = app_type
+        if app_type == "Модератор чата":
+            self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
+            self.add_item(discord.ui.TextInput(label="Опыт (если есть)", placeholder="Расскажите о вашем опыте", style=discord.TextStyle.paragraph, max_length=500, required=False))
+            self.add_item(discord.ui.TextInput(label="По какой причине вы хотите стать модератором?", placeholder="Напишите мотивацию", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+        elif app_type == "Маппер":
+            self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
+            self.add_item(discord.ui.TextInput(label="Опыт мапперства (как можно подробнее)", placeholder="Опишите ваш опыт", style=discord.TextStyle.paragraph, max_length=500, required=False))
+            self.add_item(discord.ui.TextInput(label="Ваша специализация", placeholder="Например: строительство, редстоун, ландшафт...", max_length=100, required=True))
+        elif app_type == "Киноклуб":
+            self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
+            self.add_item(discord.ui.TextInput(label="Как долго вы находитесь на сервере?", placeholder="Например: 2 месяца", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="По какой причине вы хотите попасть в киноклуб?", placeholder="Напишите мотивацию", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+        elif app_type == "Девушка":
+            self.add_item(discord.ui.TextInput(label="Как вас зовут?", placeholder="Ваше имя", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Сколько вам лет?", placeholder="Возраст", max_length=3, required=True))
+            self.add_item(discord.ui.TextInput(label="Расскажите о себе", placeholder="Немного о себе...", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        answers = [child.value for child in self.children]
+        role_map = {
+            "Маппер": ROLE_MAPPER,
+            "Модератор чата": ROLE_MODERATOR,
+            "Киноклуб": ROLE_CINEMA,
+            "Девушка": ROLE_GIRL
+        }
+        target_role_id = role_map.get(self.app_type)
+        if not target_role_id:
+            await interaction.followup.send("❌ Ошибка: неизвестный тип заявки.", ephemeral=True)
+            return
+        channel = interaction.client.get_channel(APPLICATIONS_CHANNEL_ID)
+        if not channel:
+            await interaction.followup.send("❌ Канал заявок не найден.", ephemeral=True)
+            return
+        thread_name = f"📩-{self.app_type}-{interaction.user.name}"
+        thread = await channel.create_thread(name=thread_name, type=discord.ChannelType.private_thread, invitable=False)
+        await thread.add_user(interaction.user)
+        for role_id in HIGHER_ROLES:
+            role = interaction.guild.get_role(role_id)
+            if role:
+                try:
+                    await thread.send(content=f"<@&{role_id}>", allowed_mentions=discord.AllowedMentions(roles=True))
+                except:
+                    pass
+
+        embed = discord.Embed(title=f"📋 Заявка на {self.app_type}", color=0x5865F2, timestamp=datetime.now(MSK))
+        embed.add_field(name="👤 Игрок", value=interaction.user.mention, inline=False)
+
+        if self.app_type == "Модератор чата":
+            embed.add_field(name="📛 Никнейм", value=answers[0], inline=True)
+            embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
+            embed.add_field(name="📜 Опыт", value=answers[2] or "Не указан", inline=False)
+            embed.add_field(name="💬 Причина", value=answers[3], inline=False)
+        elif self.app_type == "Маппер":
+            embed.add_field(name="📛 Никнейм", value=answers[0], inline=True)
+            embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
+            embed.add_field(name="📜 Опыт мапперства", value=answers[2] or "Не указан", inline=False)
+            embed.add_field(name="🔧 Специализация", value=answers[3], inline=False)
+        elif self.app_type == "Киноклуб":
+            embed.add_field(name="📛 Никнейм", value=answers[0], inline=True)
+            embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
+            embed.add_field(name="⏳ Время на сервере", value=answers[2], inline=False)
+            embed.add_field(name="💬 Причина", value=answers[3], inline=False)
+        elif self.app_type == "Девушка":
+            embed.add_field(name="👩 Имя", value=answers[0], inline=True)
+            embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
+            embed.add_field(name="📝 О себе", value=answers[2], inline=False)
+
+        embed.set_footer(text=f"ID заявки: {thread.id}")
+        view = ApplicationVerdictView(interaction.user.id, target_role_id, self.app_type)
+        await thread.send(content=f"🔔 **Новая заявка от {interaction.user.mention}**", embed=embed, view=view)
+        await interaction.followup.send(f"✅ Ваша заявка отправлена! Ожидайте решения в ветке {thread.mention}", ephemeral=True)
+        await send_log(interaction.guild, "📩 Создана заявка", f"Пользователь {interaction.user.mention} подал заявку на {self.app_type} (ветка {thread.mention})", color=0x3498db)
+
+class ApplicationVerdictView(discord.ui.View):
+    def __init__(self, applicant_id: int, role_id: int, app_type: str):
+        super().__init__(timeout=None)
+        self.applicant_id = applicant_id
+        self.role_id = role_id
+        self.app_type = app_type
+    @discord.ui.button(label="✅ Принять", style=discord.ButtonStyle.success, custom_id="app_accept")
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
+            await interaction.response.send_message("❌ У вас нет прав для принятия заявок.", ephemeral=True)
+            return
+        guild = interaction.guild
+        member = guild.get_member(self.applicant_id)
+        if not member:
+            await interaction.response.send_message("❌ Пользователь не найден на сервере.", ephemeral=True)
+            return
+        role = guild.get_role(self.role_id)
+        if not role:
+            await interaction.response.send_message("❌ Роль для выдачи не найдена.", ephemeral=True)
+            return
+        try:
+            await member.add_roles(role)
+            await interaction.response.send_message(f"✅ Заявка принята! Пользователю {member.mention} выдана роль {role.mention}.")
+            await send_log(guild, "✅ Заявка принята", f"Пользователь {member.mention} получил роль {role.mention} (заявка на {self.app_type})", color=0x2ecc71)
+            await interaction.channel.edit(locked=True, archived=True)
+            await interaction.channel.send(f"🎉 Заявка принята! {member.mention}, поздравляем!")
+            await interaction.message.edit(view=None)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+    @discord.ui.button(label="❌ Отказать", style=discord.ButtonStyle.danger, custom_id="app_reject")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
+            await interaction.response.send_message("❌ У вас нет прав для отклонения заявок.", ephemeral=True)
+            return
+        await interaction.response.send_message("❌ Заявка отклонена. Ветка будет заархивирована.")
+        await interaction.channel.send("🔴 **Заявка отклонена.** Спасибо за проявленный интерес.")
+        await interaction.channel.edit(locked=True, archived=True)
+        await interaction.message.edit(view=None)
+        await send_log(interaction.guild, "❌ Заявка отклонена", f"Заявка на {self.app_type} от пользователя <@{self.applicant_id}> отклонена.", color=0xe74c3c)
+
+class ApplicationView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ApplicationSelect())
+
+class VerifyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label="✅ Верифицироваться", style=discord.ButtonStyle.success, custom_id="verify_btn")
+    async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
+        unverified_role = interaction.guild.get_role(UNVERIFIED_ROLE_ID)
+        verified_role = interaction.guild.get_role(VERIFY_ROLE_ID)
+        role_1 = interaction.guild.get_role(ROLE_1)
+        if not unverified_role or not verified_role or not role_1:
+            await interaction.response.send_message("❌ Ошибка конфигурации ролей. Обратитесь к администрации.", ephemeral=True)
+            return
+        if verified_role in interaction.user.roles:
+            await interaction.response.send_message("✅ Вы уже верифицированы!", ephemeral=True)
+            return
+
+        try:
+            if unverified_role in interaction.user.roles:
+                await interaction.user.remove_roles(unverified_role)
+            await interaction.user.add_roles(verified_role, role_1)
+            interaction.client.user_level_cache[interaction.user.id] = 1
+            await interaction.response.send_message(f"✅ Поздравляю! Вы успешно верифицированы. Вам выдана роль {verified_role.mention} и роль 1 уровня.", ephemeral=True)
+            await send_log(interaction.guild, "✅ Верификация", f"Пользователь {interaction.user.mention} успешно верифицирован, выдана роль 1 уровня.", color=0x2ecc71)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Ошибка при верификации: {e}", ephemeral=True)
+
+# ==================== КЛАСС БОТА ====================
+class KingdomBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        intents.guilds = True
+        intents.reactions = True
+        allowed_mentions = discord.AllowedMentions(roles=True, users=True, everyone=False)
+        super().__init__(command_prefix="!", intents=intents, allowed_mentions=allowed_mentions)
+        self.reacted_messages = set()
+        self.user_badword_counts = {}
+        self.user_level_cache = {}
+
+    async def setup_hook(self):
+        self.tree.add_command(lk)
+        self.tree.add_command(bind)
+        self.tree.add_command(chance)
+        self.tree.add_command(sync_cmd)
+        self.tree.add_command(test_welcome)
+        self.tree.add_command(remind)
+        self.tree.add_command(badwords)
+        self.tree.add_command(warnlist)
+        self.tree.add_command(give_temp_role)
+        self.tree.add_command(warn)
+        self.tree.add_command(unwarn)
+        self.tree.add_command(mute)
+        self.tree.add_command(unmute)
+        self.tree.add_command(ban)
+        self.tree.add_command(unban)
+        self.tree.add_command(delete)
+        self.tree.add_command(staff)
+        self.tree.add_command(setup_support)
+        self.tree.add_command(setup_applications)
+        self.tree.add_command(send_cmd)
+        self.tree.add_command(messages)
+        self.tree.add_command(top)
+        self.tree.add_command(setmessages)
+        self.tree.add_command(addmessages)
+        self.tree.add_command(resetmessages)
+        try:
+            from mc_status import StatusButtonsView
+            self.add_view(StatusButtonsView())
+        except Exception:
+            pass
+        self.add_view(VerifyView())
+        self.add_view(WelcomeButtonsView())
+        self.add_view(SupportHubView())
+        self.add_view(TicketCloseView())
+        self.add_view(IdeaVotingView())
+        self.add_view(ApplicationView())
+
+    async def find_player_by_nick(self, nick: str, users_data: dict):
+        if not users_data or "players" not in users_data:
+            return None
+        uuid = await get_uuid_by_name(nick)
+        if not uuid:
+            return None
+        uuid_clean = uuid.replace("-", "")
+        if uuid_clean in users_data["players"]:
+            return uuid_clean, users_data["players"][uuid_clean]
+        return None
+
+    async def find_player_by_id(self, player_id: int, users_data: dict):
+        if not users_data or "players" not in users_data:
+            return None
+        for uuid, data in users_data["players"].items():
+            if data.get("player-id") == player_id:
+                return uuid, data
+        return None
+
+    async def find_player_by_discord(self, discord_id: str, users_data: dict):
+        if not users_data or "players" not in users_data:
+            return None
+        for uuid, data in users_data["players"].items():
+            if data.get("discord-id") == discord_id:
+                return uuid, data
+        return None
+
+    def get_group_prefix(self, group_name: str, users_data: dict) -> str:
+        return ""
+
+    async def on_ready(self):
+        print('==================================================')
+        print(f'✨ Kingdom of Joy активирован: {self.user}')
+        print(f'📍 Часовой пояс установлен: МСК (UTC+3)')
+        print('==================================================')
+        self.presence_update.start()
+        self.reminder_check.start()
+        try:
+            from mc_status import auto_update_status_task
+            if not auto_update_status_task.is_running():
+                auto_update_status_task.start(self)
+                print("✅ Автообновление мониторинга запущено")
+        except Exception as e:
+            print(f"⚠️ Ошибка запуска таска мониторинга: {e}")
+        verify_channel = self.get_channel(VERIFY_CHANNEL_ID)
+        if verify_channel:
+            data = load_json(VERIFY_MSG_FILE, {})
+            msg_id = data.get("message_id")
+            if msg_id:
+                try:
+                    msg = await verify_channel.fetch_message(msg_id)
+                    if msg:
+                        print("✅ Сообщение верификации уже существует.")
+                        return
+                except:
+                    pass
+            embed = discord.Embed(
+                title="🔐 Верификация",
+                description=("Для получения доступа ко всем каналам сервера, пожалуйста, нажмите кнопку ниже.\n"
+                             "После верификации вы получите основную роль и сможете участвовать в жизни сообщества."),
+                color=0x5865F2
+            )
+            view = VerifyView()
+            msg = await verify_channel.send(embed=embed, view=view)
+            save_json(VERIFY_MSG_FILE, {"message_id": msg.id})
+            print("✅ Сообщение верификации отправлено.")
+
+    @tasks.loop(minutes=5)
+    async def presence_update(self):
+        statuses = ["Kingdom of Joy | !sync", "Защита Эфира...", "Под управлением Создателя", "Майнкрафт"]
+        status = random.choice(statuses)
+        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name=status))
+
+    @tasks.loop(minutes=2)
+    async def reminder_check(self):
+        reminders = load_json(REMINDERS_FILE, [])
+        now = datetime.now(MSK).timestamp()
+        updated = []
+        for rem in reminders:
+            if now >= rem["unix"]:
+                try:
+                    ch = self.get_channel(rem["channel_id"])
+                    if ch:
+                        await ch.send(make_blockquote(f"⏰ <@{rem['user_id']}>, **Напоминание:** {rem['text']}"))
+                except Exception:
+                    pass
+            else:
+                updated.append(rem)
+        if len(updated) != len(reminders):
+            save_json(REMINDERS_FILE, updated)
+
+    async def on_member_join(self, member: discord.Member):
+        verified_role = member.guild.get_role(VERIFY_ROLE_ID)
+        if verified_role and verified_role in member.roles:
+            return
+        unverified_role = member.guild.get_role(UNVERIFIED_ROLE_ID)
+        if unverified_role and unverified_role not in member.roles:
+            try:
+                await member.add_roles(unverified_role)
+                await send_log(member.guild, "📥 Выдана неверифицированная роль", f"Пользователю {member.mention} выдана роль {unverified_role.mention}.", color=0xf1c40f)
+            except Exception as e:
+                print(f"❌ Не удалось выдать неверифицированную роль: {e}")
+        welcome_ch = self.get_channel(WELCOME_CHANNEL_ID)
+        if not welcome_ch:
+            return
+        banner_file = create_welcome_banner(member.display_name)
+        embed = discord.Embed(
+            title="👑 Новый Странник ступил в Kingdom of Joy!",
+            description=f"Приветствуем тебя, {member.mention}!\nЗагляни в <#1520119059566559282> для навигации по серверу.\n\n🔐 Для получения доступа пройди верификацию в канале <#{VERIFY_CHANNEL_ID}>.",
+            color=0x7864c8,
+            timestamp=datetime.now(MSK)
+        )
+        embed.set_image(url="attachment://welcome_banner.png")
+        await welcome_ch.send(content=f"👋 {member.mention}", embed=embed, file=banner_file, view=WelcomeButtonsView(member.guild.id))
+        await send_log(member.guild, "📥 Новый Участник", f"Пользователь {member.mention} (`{member.id}`) присоединился к серверу.", color=0x2ecc71)
+
+    async def on_member_remove(self, member: discord.Member):
+        await send_log(member.guild, "📤 Участник Покинул Сервер", f"Пользователь **{member.name}** (`{member.id}`) вышел с сервера.", color=0xe74c3c)
+
+    async def on_message_edit(self, before: discord.Message, after: discord.Message):
+        if before.author.bot or after.author.bot:
+            return
+        if before.content == after.content:
+            return
+        if not before.guild:
+            return
+        if before.channel.id == EXCLUDED_LOG_CHANNEL:
+            return
+        embed = discord.Embed(title="✏️ Сообщение изменено", color=0xf1c40f, timestamp=datetime.now(MSK))
+        embed.add_field(name="Автор", value=before.author.mention, inline=True)
+        embed.add_field(name="Канал", value=before.channel.mention, inline=True)
+        embed.add_field(name="До", value=before.content[:1024] or "*(пусто)*", inline=False)
+        embed.add_field(name="После", value=after.content[:1024] or "*(пусто)*", inline=False)
+        embed.set_footer(text=f"ID сообщения: {before.id}")
+        log_channel = before.guild.get_channel(LOGS_CHANNEL_ID)
+        if log_channel:
+            try:
+                await log_channel.send(embed=embed)
+            except Exception as e:
+                print(f"❌ Ошибка отправки лога редактирования: {e}")
+
+    async def on_message_delete(self, message: discord.Message):
+        if message.author.bot:
+            return
+        if not message.guild:
+            return
+        if message.channel.id == EXCLUDED_LOG_CHANNEL:
+            return
+        embed = discord.Embed(title="🗑️ Сообщение удалено", color=0xe74c3c, timestamp=datetime.now(MSK))
+        embed.add_field(name="Автор", value=message.author.mention, inline=True)
+        embed.add_field(name="Канал", value=message.channel.mention, inline=True)
+        embed.add_field(name="Содержание", value=message.content[:1024] or "*(вложение/пусто)*", inline=False)
+        embed.set_footer(text=f"ID сообщения: {message.id}")
+        log_channel = message.guild.get_channel(LOGS_CHANNEL_ID)
+        if log_channel:
+            try:
+                await log_channel.send(embed=embed)
+            except Exception as e:
+                print(f"❌ Ошибка отправки лога удаления: {e}")
+
+    def is_allowed_staff(self, interaction: discord.Interaction) -> bool:
+        m = interaction.user
+        if m.id in CREATOR_AND_ROLE_IDS:
+            return True
+        return any(r.id in [CREATOR_ROLE_ID, FOUNDER_ROLE_ID, MODERATOR_ROLE_ID] for r in m.roles)
+
+    def is_allowed_staff_sync(self, message: discord.Message) -> bool:
+        m = message.author
+        if m.id in CREATOR_AND_ROLE_IDS:
+            return True
+        return any(r.id in [CREATOR_ROLE_ID, FOUNDER_ROLE_ID, MODERATOR_ROLE_ID] for r in m.roles)
+
+    def check_hierarchy(self, moderator: discord.Member, target: discord.Member) -> bool:
+        if moderator.id in CREATOR_AND_ROLE_IDS:
+            return True
+        if is_high_staff(target):
+            return False
+        if target.id in CREATOR_AND_ROLE_IDS or any(r.id in IMMUNE_ROLE_IDS for r in target.roles):
+            return False
+        return target.top_role.position < moderator.top_role.position
+
+    async def on_command_error(self, ctx, error):
+        if isinstance(error, commands.CommandNotFound):
+            return
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send(make_blockquote("❌ У вас недостаточно прав для выполнения этой команды."))
+            return
+        if isinstance(error, commands.BotMissingPermissions):
+            await ctx.send(make_blockquote("❌ У бота нет необходимых прав для выполнения этого действия."))
+            return
+        print(f"❌ Ошибка в префиксной команде {ctx.command}: {error}")
+        traceback.print_exc()
+
+    async def on_tree_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        original_error = getattr(error, 'original', error)
+        if isinstance(original_error, (app_commands.MissingPermissions, app_commands.MissingRole)):
+            msg = "❌ У вас недостаточно прав для использования этой команды."
+        elif isinstance(original_error, app_commands.BotMissingPermissions):
+            missing = ", ".join(original_error.missing_permissions)
+            msg = f"❌ У бота отсутствуют необходимые права: `{missing}`"
+        elif isinstance(original_error, app_commands.CommandOnCooldown):
+            msg = f"⏳ Команда на перезарядке. Подождите `{original_error.retry_after:.1f}` сек."
+        elif isinstance(original_error, (app_commands.TransformerError, app_commands.BadArgument)):
+            msg = "⚠️ Переданы некорректные аргументы для команды."
+        else:
+            msg = "❌ Произошла внутренняя ошибка при выполнении команды. Информация отправлена в логи."
+            print(f"❌ Критическая ошибка в Слэш-команде /{interaction.command.name if interaction.command else 'Unknown'}: {original_error}")
+            traceback.print_exc()
+            if interaction.guild:
+                tb_text = "".join(traceback.format_exception(type(original_error), original_error, original_error.__traceback__))
+                if len(tb_text) > 900:
+                    tb_text = tb_text[:900] + "\n... [срезано]"
+                await send_log(
+                    interaction.guild,
+                    "💥 Ошибка Слэш-Команды",
+                    f"**Команда:** `/{interaction.command.name if interaction.command else 'Unknown'}`\n"
+                    f"**Вызвал:** {interaction.user.mention} (`{interaction.user.id}`)\n"
+                    f"**Канал:** {interaction.channel.mention}\n\n"
+                    f"```python\n{tb_text}\n```",
+                    color=0xff0000
+                )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(make_blockquote(msg), ephemeral=True)
+            else:
+                await interaction.response.send_message(make_blockquote(msg), ephemeral=True)
+        except Exception as e:
+            print(f"❌ Не удалось отправить сообщение об ошибке пользователю: {e}")
+
+    async def on_message(self, message: discord.Message):
+        if message.author == self.user:
+            return
+
+        # ========== ЗАЩИТА ОТ НЕВЕРИФИЦИРОВАННЫХ ==========
+        if isinstance(message.channel, discord.TextChannel) and message.guild:
+            if message.channel.id != BOT_CHANNEL:
+                member = message.author
+                has_verify = any(r.id == VERIFY_ROLE_ID for r in member.roles)
+                if not has_verify and message.channel.category_id != UNVERIFIED_ALLOWED_CATEGORY:
+                    try:
+                        await message.delete()
+                        await message.author.send(f"⚠️ Для отправки сообщений пройдите верификацию в канале <#{VERIFY_CHANNEL_ID}>.")
+                    except:
+                        pass
+                    return
+
+        # ========== ПОДСЧЁТ СООБЩЕНИЙ И ОБНОВЛЕНИЕ УРОВНЯ ==========
+        if isinstance(message.channel, discord.TextChannel) and message.channel.id in COUNT_CHANNELS:
+            if not message.author.bot:
+                counts = load_message_counts()
+                user_id = str(message.author.id)
+                new_count = counts.get(user_id, 0) + 1
+                counts[user_id] = new_count
+                save_message_counts(counts)
+                await update_user_level(self, message.author, new_count, message.channel)
+
+        # ========== ОСТАЛЬНАЯ ОБРАБОТКА ==========
+        lowered_content = message.content.lower().strip()
+
+        # Обработка синхронизации
+        if lowered_content.startswith("!sync"):
+            if message.author.id != 1437779380184158249:
+                return
+            parts = message.content.split()
+            scope = parts[1].lower() if len(parts) > 1 else "guild"
+            status_msg = await message.channel.send("⚡ Синхронизирую слэш-команды...")
+            try:
+                if scope == "guild":
+                    self.tree.copy_global_to(guild=message.guild)
+                    synced = await self.tree.sync(guild=message.guild)
+                    await status_msg.edit(content=f"✅ **Готово!** Скопировано и синхронизировано: `{len(synced)}` команд.")
+                else:
+                    synced = await self.tree.sync()
+                    await status_msg.edit(content=f"🌐 **Готово!** Глобальная синхронизация завершена: `{len(synced)}` команд.")
+                await send_log(message.guild, "⚡ Ручная Синхронизация (!sync)", "Создатель выполнил синхронизацию слэш-команд.", color=0x2ecc71)
+            except Exception as e:
+                await status_msg.edit(content=f"❌ Ошибка синхронизации: `{e}`")
+            return
+
+        # Префиксные модераторские команды
+        if lowered_content.startswith(("!мут", "!бан", "!варн", "!удалить")):
+            if not self.is_allowed_staff_sync(message):
+                await message.channel.send("❌ У вас недостаточно прав для использования этой команды.", delete_after=5)
+                return
+            parts = message.content.split()
+            cmd = parts[0].lower()
+            if len(parts) < 2:
+                await message.channel.send("⚠️ Использование: `!мут/!бан/!варн @пользователь [время/причина]`", delete_after=5)
+                return
+
+            targets = message.mentions
+            target = targets[0] if targets else None
+
+            if not target and parts[1].isdigit():
+                try:
+                    target = await message.guild.fetch_member(int(parts[1]))
+                except:
+                    pass
+
+            if cmd == "!удалить":
+                try:
+                    amount = int(parts[1])
+                    deleted = await message.channel.purge(limit=amount + 1)
+                    await message.channel.send(make_blockquote(f"🧹 Удалено {len(deleted)-1} сообщений."), delete_after=5)
+                    await send_log(message.guild, "🧹 Очистка ЧАТА", f"Модератор {message.author.mention} очистил `{len(deleted)-1}` сообщений.", color=0x34495e)
+                except Exception as e:
+                    await message.channel.send(f"❌ Ошибка: `{e}`", delete_after=5)
+                return
+
+            if not target:
+                await message.channel.send("❌ Укажите корректного пользователя.", delete_after=5)
+                return
+
+            if is_high_staff(target) or not self.check_hierarchy(message.author, target):
+                await message.channel.send("❌ Нельзя применить действие к этому пользователю.", delete_after=5)
+                return
+
+            if cmd == "!мут":
+                time_str = parts[2] if len(parts) > 2 else "10m"
+                reason = " ".join(parts[3:]) if len(parts) > 3 else "Нарушение правил"
+                duration = parse_duration(time_str)
+                await target.timeout(duration, reason=reason)
+                await message.channel.send(make_blockquote(f"🔇 {target.mention} замучен на **{time_str}**."))
+                await send_log(message.guild, "🔇 Выдан Мут", f"Модератор: {message.author.mention}\nНарушитель: {target.mention}\nСрок: `{time_str}`\nПричина: *{reason}*", color=0xe74c3c)
+
+            elif cmd == "!бан":
+                reason = " ".join(parts[2:]) if len(parts) > 2 else "Нарушение правил"
+                await target.ban(reason=reason)
+                await message.channel.send(make_blockquote(f"🚫 {target.mention} забанен."))
+                await send_log(message.guild, "🚫 Бан", f"Модератор {message.author.mention} забанил {target.mention}.\nПричина: *{reason}*", color=0x900c3f)
+
+            elif cmd == "!варн":
+                reason = " ".join(parts[2:]) if len(parts) > 2 else "Нарушение правил"
+                warns = load_json(WARNS_FILE, {})
+                uid = str(target.id)
+                count = warns.get(uid, 0) + 1
+                if count >= 3:
+                    warns[uid] = 0
+                    save_json(WARNS_FILE, warns)
+                    await target.timeout(timedelta(days=1), reason="3/3 варна")
+                    await message.channel.send(make_blockquote(f"⚡ {target.mention} получил 3/3 варнов и замучен на 1 день!"))
+                    await send_log(message.guild, "⛔ Авто-Мут (3/3 Варна)", f"Пользователь {target.mention} набрал 3 варна и отправлен в мут на 24 часа.", color=0xc0392b)
+                else:
+                    warns[uid] = count
+                    save_json(WARNS_FILE, warns)
+                    await message.channel.send(make_blockquote(f"⚠️ {target.mention} получил варн **({count}/3)**. Причина: *{reason}*"))
+                    await send_log(message.guild, "⚠️ Выдан Варн", f"Модератор: {message.author.mention}\nНарушитель: {target.mention}\nВарны: `{count}/3`\nПричина: *{reason}*", color=0xe67e22)
+            return
+
+        # ========== АВТО-РЕАКЦИИ И ФИЛЬТРЫ ==========
+        for trigger in BALKAN_TRIGGERS:
+            if trigger in message.content:
+                for emoji in CUSTOM_REACTIONS:
+                    try:
+                        await message.add_reaction(emoji)
+                    except:
+                        pass
+                break
+
+        for trigger in SPECIAL_TRIGGERS:
+            if trigger in message.content:
+                try:
+                    await message.add_reaction(CROWN_EMOJI)
+                except:
+                    pass
+                break
+
+        # Фильтр плохих слов
+        badwords_data = load_json(BADWORDS_FILE, {})
+        bad_words = badwords_data.get("words", [])
+        mute_time = badwords_data.get("mute_time", "1h")
+
+        if bad_words and not is_calm_member(message.author):
+            for word in bad_words:
+                if re.search(rf"\b{re.escape(word)}\b", message.content, re.IGNORECASE):
+                    try:
+                        await message.delete()
+                        duration = parse_duration(mute_time)
+                        await message.author.timeout(duration, reason=f"Использование запрещенных слов: {word}")
+                        await message.channel.send(make_blockquote(f"🔇 {message.author.mention} замучен на **{mute_time}** за использование запрещенных слов."), delete_after=10)
+                        await send_log(message.guild, "🛡️ Авто-Мут (Запрещенные слова)", f"Пользователь: {message.author.mention}\nСлово: `{word}`\nМут: `{mute_time}`", color=0xe74c3c)
+                    except Exception as e:
+                        print(f"❌ Ошибка фильтра плохих слов: {e}")
+                    break
+
+        await self.process_commands(message)
+
+# ==================== ЗАПУСК БОТА ====================
+if __name__ == "__main__":
+    bot = KingdomBot()
+    bot.run(TOKEN)
