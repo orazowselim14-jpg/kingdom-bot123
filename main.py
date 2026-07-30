@@ -34,6 +34,7 @@ SUPPORT_CONFIG_FILE = "support_config.json"
 BADWORDS_FILE = "badwords.json"
 REMINDERS_FILE = "reminders.json"
 APPLICATIONS_CONFIG_FILE = "applications_config.json"
+MARRIAGES_FILE = "marriages.json"
 CREATOR_AND_ROLE_IDS = [1437779380184158249, 1001913830261129237, 1308313239775608863]
 CREATOR_ROLE_ID = 1505438802653741096
 FOUNDER_ROLE_ID = 1505235504826814535
@@ -132,12 +133,18 @@ def save_json(filepath, data):
     except Exception as e:
         print(f"❌ Ошибка сохранения {filepath}: {e}")
 
-# ==================== СЧЁТЧИКИ СООБЩЕНИЙ ====================
+# ==================== СЧЁТЧИКИ СООБЩЕНИЙ И БРАКОВ ====================
 def load_message_counts():
     return load_json(MESSAGE_COUNTS_FILE, {})
 
 def save_message_counts(data):
     save_json(MESSAGE_COUNTS_FILE, data)
+
+def load_marriages():
+    return load_json(MARRIAGES_FILE, {})
+
+def save_marriages(data):
+    save_json(MARRIAGES_FILE, data)
 
 # ==================== SFTP ====================
 sftp_cache = {"data": None, "timestamp": 0}
@@ -324,7 +331,7 @@ def format_time(seconds: int) -> str:
     else:
         return f"{secs}с"
 
-# ==================== ОСНОВНАЯ ФУНКЦИЯ ОБНОВЛЕНИЯ УРОВНЯ ====================
+# ==================== ОБНОВЛЕНИЕ УРОВНЯ ====================
 async def update_user_level(bot: commands.Bot, member: discord.Member, new_count: int, channel: discord.TextChannel = None):
     new_level = get_level(new_count)
     old_level = bot.user_level_cache.get(member.id, 1)
@@ -358,7 +365,120 @@ async def update_user_level(bot: commands.Bot, member: discord.Member, new_count
         except Exception as e:
             print(f"Ошибка отправки поздравления: {e}")
 
-# ==================== СЛЭШ-КОМАНДЫ ====================
+# ==================== ИНТЕРАКТИВНЫЙ БРАК ====================
+class MarriageProposalView(discord.ui.View):
+    def __init__(self, author: discord.Member, target: discord.Member):
+        super().__init__(timeout=120)
+        self.author = author
+        self.target = target
+
+    @discord.ui.button(label="Принять 💕", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target.id:
+            await interaction.response.send_message("❌ Это предложение адресовано не вам!", ephemeral=True)
+            return
+
+        marriages = load_marriages()
+        if str(self.author.id) in marriages or str(self.target.id) in marriages:
+            await interaction.response.send_message("❌ Один из участников уже состоит в браке!", ephemeral=True)
+            return
+
+        now_ts = int(datetime.now(MSK).timestamp())
+        marriages[str(self.author.id)] = {"partner": self.target.id, "date": now_ts}
+        marriages[str(self.target.id)] = {"partner": self.author.id, "date": now_ts}
+        save_marriages(marriages)
+
+        self.stop()
+        embed = discord.Embed(
+            title="💍 Священный Союз Заключён!",
+            description=f"🎉 {self.author.mention} и {self.target.mention} теперь официально в браке!\nПоздравляем новобрачных! 💕",
+            color=0xff69b4,
+            timestamp=datetime.now(MSK)
+        )
+        await interaction.response.edit_message(content=None, embed=embed, view=None)
+        await send_log(interaction.guild, "💍 Заключен Брак", f"{self.author.mention} и {self.target.mention} вступили в брак.", color=0xff69b4)
+
+    @discord.ui.button(label="Отклонить 💔", style=discord.ButtonStyle.danger)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.target.id:
+            await interaction.response.send_message("❌ Это предложение адресовано не вам!", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.edit_message(content=make_blockquote(f"💔 {self.target.mention} отклонил(а) предложение руки и сердца от {self.author.mention}."), embed=None, view=None)
+
+# ==================== СЛЭШ-КОМАНДЫ БРАКОВ ====================
+@app_commands.command(name="брак", description="💍 Сделать предложение руки и сердца игроку")
+@app_commands.describe(user="Пользователь, которому вы предлагаете брак")
+async def marriage_propose(interaction: discord.Interaction, user: discord.Member):
+    if user.id == interaction.user.id:
+        await interaction.response.send_message("❌ Вы не можете заключить брак с самим собой!", ephemeral=True)
+        return
+    if user.bot:
+        await interaction.response.send_message("❌ Нельзя вступать в брак с ботами!", ephemeral=True)
+        return
+
+    marriages = load_marriages()
+    if str(interaction.user.id) in marriages:
+        await interaction.response.send_message("❌ Вы уже состоите в браке! Сначала разведитесь командой `/развод`.", ephemeral=True)
+        return
+    if str(user.id) in marriages:
+        await interaction.response.send_message(f"❌ Пользователь {user.mention} уже состоит в браке!", ephemeral=True)
+        return
+
+    view = MarriageProposalView(interaction.user, user)
+    embed = discord.Embed(
+        title="💍 Предложение руки и сердца!",
+        description=f"💖 {user.mention}, пользователь {interaction.user.mention} предлагает вам вступить в брак!\nВы принимаете предложение?",
+        color=0xff69b4
+    )
+    await interaction.response.send_message(content=f"{user.mention}", embed=embed, view=view)
+
+@app_commands.command(name="развод", description="💔 Расторгнуть ваш текущий брак")
+async def marriage_divorce(interaction: discord.Interaction):
+    marriages = load_marriages()
+    uid = str(interaction.user.id)
+    if uid not in marriages:
+        await interaction.response.send_message("❌ Вы не состоите в браке.", ephemeral=True)
+        return
+
+    partner_id = marriages[uid]["partner"]
+    del marriages[uid]
+    if str(partner_id) in marriages:
+        del marriages[str(partner_id)]
+    save_marriages(marriages)
+
+    partner = interaction.guild.get_member(partner_id)
+    partner_str = partner.mention if partner else f"<@{partner_id}>"
+
+    await interaction.response.send_message(make_blockquote(f"💔 Брак между {interaction.user.mention} и {partner_str} был расторгнут."))
+    await send_log(interaction.guild, "💔 Брак Расторгнут", f"Пользователь {interaction.user.mention} развёлся с {partner_str}.", color=0xe74c3c)
+
+@app_commands.command(name="профиль_брака", description="💕 Посмотреть статус брака")
+@app_commands.describe(user="Пользователь (оставьте пустым для себя)")
+async def marriage_profile(interaction: discord.Interaction, user: discord.Member = None):
+    target = user or interaction.user
+    marriages = load_marriages()
+    uid = str(target.id)
+    if uid not in marriages:
+        await interaction.response.send_message(make_blockquote(f"💔 {target.mention} не состоит в браке."), ephemeral=True)
+        return
+
+    p_info = marriages[uid]
+    partner = interaction.guild.get_member(p_info["partner"])
+    partner_str = partner.mention if partner else f"<@{p_info['partner']}>"
+    date_str = f"<t:{p_info['date']}:D> (<t:{p_info['date']}:R>)"
+
+    embed = discord.Embed(
+        title=f"💕 Профиль брака — {target.display_name}",
+        color=0xff69b4,
+        timestamp=datetime.now(MSK)
+    )
+    embed.add_field(name="💍 Супруг(а)", value=partner_str, inline=True)
+    embed.add_field(name="📅 Дата свадьбы", value=date_str, inline=True)
+    embed.set_footer(text="Kingdom of Joy | Браки", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+    await interaction.response.send_message(embed=embed)
+
+# ==================== ОСТАЛЬНЫЕ СЛЭШ-КОМАНДЫ ====================
 @app_commands.command(name="lk", description="📊 Показать личный кабинет (свой или другого игрока)")
 @app_commands.describe(player="Никнейм или ID игрока (оставьте пустым для своего профиля)")
 async def lk(interaction: discord.Interaction, player: str = None):
@@ -587,7 +707,8 @@ async def warnlist(interaction: discord.Interaction):
 
 @app_commands.command(name="role", description="Выдать временную роль (например 10m, 2h)")
 async def give_temp_role(interaction: discord.Interaction, user: discord.Member, role: discord.Role, duration: str):
-    if not interaction.client.is_allowed_staff(interaction):
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     if is_high_staff(user):
         await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
@@ -607,8 +728,8 @@ async def give_temp_role(interaction: discord.Interaction, user: discord.Member,
 
 @app_commands.command(name="warn", description="Выдать варн")
 async def warn(interaction: discord.Interaction, user: discord.Member, reason: str = "Нарушение"):
-    bot = interaction.client
-    if not bot.is_allowed_staff(interaction) or not bot.check_hierarchy(interaction.user, user):
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     if is_high_staff(user):
         await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
@@ -630,7 +751,8 @@ async def warn(interaction: discord.Interaction, user: discord.Member, reason: s
 
 @app_commands.command(name="unwarn", description="Снять варн")
 async def unwarn(interaction: discord.Interaction, user: discord.Member):
-    if not interaction.client.is_allowed_staff(interaction):
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     warns = load_json(WARNS_FILE, {})
     uid = str(user.id)
@@ -642,7 +764,8 @@ async def unwarn(interaction: discord.Interaction, user: discord.Member):
 
 @app_commands.command(name="mute", description="Мут")
 async def mute(interaction: discord.Interaction, user: discord.Member, time: str, reason: str = "Нарушение"):
-    if not interaction.client.is_allowed_staff(interaction):
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     if is_high_staff(user):
         await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
@@ -654,7 +777,8 @@ async def mute(interaction: discord.Interaction, user: discord.Member, time: str
 
 @app_commands.command(name="unmute", description="Размут")
 async def unmute(interaction: discord.Interaction, user: discord.Member):
-    if not interaction.client.is_allowed_staff(interaction):
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     await user.timeout(None)
     await interaction.response.send_message(make_blockquote(f"🔊 {user.mention} размучен."))
@@ -662,7 +786,8 @@ async def unmute(interaction: discord.Interaction, user: discord.Member):
 
 @app_commands.command(name="ban", description="Бан")
 async def ban(interaction: discord.Interaction, user: discord.Member, reason: str = "Нарушение"):
-    if not interaction.client.is_allowed_staff(interaction):
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     if is_high_staff(user):
         await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
@@ -673,7 +798,8 @@ async def ban(interaction: discord.Interaction, user: discord.Member, reason: st
 
 @app_commands.command(name="unban", description="Разбан")
 async def unban(interaction: discord.Interaction, user_id: str):
-    if not interaction.client.is_allowed_staff(interaction):
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     user = await interaction.client.fetch_user(int(user_id))
     await interaction.guild.unban(user)
@@ -682,7 +808,8 @@ async def unban(interaction: discord.Interaction, user_id: str):
 
 @app_commands.command(name="delete", description="Очистка чата")
 async def delete(interaction: discord.Interaction, amount: str):
-    if not interaction.client.is_allowed_staff(interaction):
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
     limit = 1000 if amount.lower() == "all" else int(amount)
@@ -922,8 +1049,9 @@ async def resetmessages(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
 
+# ==================== КОМАНДА SEND (СЛЭШ И ТЕКСТОВАЯ) ====================
 @app_commands.command(name="send", description="📨 Отправить объявление/сообщение в канал (только для руководства)")
-@app_commands.describe(text="Текст сообщения", color="Цвет в HEX (например #ff0000)")
+@app_commands.describe(text="Текст сообщения", color="Цвет в HEX (например #ff0000 или ff0000)")
 async def send_cmd(interaction: discord.Interaction, text: str, color: str = None):
     if not any(r.id == 1526681612337549343 for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
         await interaction.response.send_message("❌ У вас нет прав на использование этой команды.", ephemeral=True)
@@ -931,9 +1059,10 @@ async def send_cmd(interaction: discord.Interaction, text: str, color: str = Non
 
     embed_color = 0x5865F2
     if color:
+        clean_hex = color.lstrip('#')
         try:
-            embed_color = int(color.lstrip('#'), 16)
-        except:
+            embed_color = int(clean_hex, 16)
+        except ValueError:
             embed_color = 0x5865F2
 
     embed = discord.Embed(
@@ -946,8 +1075,7 @@ async def send_cmd(interaction: discord.Interaction, text: str, color: str = Non
     await interaction.response.send_message(embed=embed)
     await send_log(interaction.guild, "📨 Отправлено объявление", f"Руководство {interaction.user.mention} отправил объявление в канале {interaction.channel.mention}", color=embed_color)
 
-# ==================== КОМАНДЫ УПРАВЛЕНИЯ ИГРОВЫМИ ДАННЫМИ (из minecraft_admin) ====================
-
+# ==================== ИГРОВЫЕ ДАННЫЕ (MINECRAFT SFTP) ====================
 @app_commands.command(name="addgroup", description="👑 Выдать группу игроку")
 @app_commands.describe(nickname="Ник игрока", group="Название группы", duration="Время (1d, 2h, 30m, 10s) или оставьте пустым для бессрочной")
 async def addgroup(interaction: discord.Interaction, nickname: str, group: str, duration: str = None):
@@ -1276,7 +1404,7 @@ async def resetplayer(interaction: discord.Interaction, nickname: str):
     else:
         await interaction.followup.send("❌ Ошибка сохранения данных.")
 
-# ==================== UI КОМПОНЕНТЫ ====================
+# ==================== UI КОМПОНЕНТЫ И ИСПРАВЛЕННЫЕ АНКЕТЫ ====================
 class WelcomeButtonsView(discord.ui.View):
     def __init__(self, guild_id: int = 0):
         super().__init__(timeout=None)
@@ -1459,23 +1587,23 @@ class ApplicationSelect(discord.ui.Select):
 
 class ApplicationModal(discord.ui.Modal):
     def __init__(self, app_type: str):
-        super().__init__(title=f"📝 Заявка на {app_type}")
+        super().__init__(title=f"📝 Заявка: {app_type[:20]}")
         self.app_type = app_type
         if app_type == "Модератор чата":
             self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
             self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
             self.add_item(discord.ui.TextInput(label="Опыт (если есть)", placeholder="Расскажите о вашем опыте", style=discord.TextStyle.paragraph, max_length=500, required=False))
-            self.add_item(discord.ui.TextInput(label="По какой причине вы хотите стать модератором?", placeholder="Напишите мотивацию", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+            self.add_item(discord.ui.TextInput(label="Причина стать модератором", placeholder="Напишите мотивацию", style=discord.TextStyle.paragraph, max_length=1000, required=True))
         elif app_type == "Маппер":
             self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
             self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
-            self.add_item(discord.ui.TextInput(label="Опыт мапперства (как можно подробнее)", placeholder="Опишите ваш опыт", style=discord.TextStyle.paragraph, max_length=500, required=False))
-            self.add_item(discord.ui.TextInput(label="Ваша специализация", placeholder="Например: строительство, редстоун, ландшафт...", max_length=100, required=True))
+            self.add_item(discord.ui.TextInput(label="Опыт мапперства", placeholder="Опишите ваш опыт", style=discord.TextStyle.paragraph, max_length=500, required=False))
+            self.add_item(discord.ui.TextInput(label="Ваша специализация", placeholder="Например: строительство, редстоун...", max_length=100, required=True))
         elif app_type == "Киноклуб":
             self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
             self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
-            self.add_item(discord.ui.TextInput(label="Как долго вы находитесь на сервере?", placeholder="Например: 2 месяца", max_length=50, required=True))
-            self.add_item(discord.ui.TextInput(label="По какой причине вы хотите попасть в киноклуб?", placeholder="Напишите мотивацию", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+            self.add_item(discord.ui.TextInput(label="Время на сервере", placeholder="Например: 2 месяца", max_length=50, required=True))
+            self.add_item(discord.ui.TextInput(label="Причина вступления в киноклуб", placeholder="Напишите вашу мотивацию...", style=discord.TextStyle.paragraph, max_length=1000, required=True))
         elif app_type == "Девушка":
             self.add_item(discord.ui.TextInput(label="Как вас зовут?", placeholder="Ваше имя", max_length=50, required=True))
             self.add_item(discord.ui.TextInput(label="Сколько вам лет?", placeholder="Возраст", max_length=3, required=True))
@@ -1498,8 +1626,13 @@ class ApplicationModal(discord.ui.Modal):
         if not channel:
             await interaction.followup.send("❌ Канал заявок не найден.", ephemeral=True)
             return
+        
         thread_name = f"📩-{self.app_type}-{interaction.user.name}"
-        thread = await channel.create_thread(name=thread_name, type=discord.ChannelType.private_thread, invitable=False)
+        try:
+            thread = await channel.create_thread(name=thread_name, type=discord.ChannelType.private_thread, invitable=False)
+        except Exception:
+            thread = await channel.create_thread(name=thread_name, type=discord.ChannelType.public_thread)
+
         await thread.add_user(interaction.user)
         for role_id in HIGHER_ROLES:
             role = interaction.guild.get_role(role_id)
@@ -1526,7 +1659,7 @@ class ApplicationModal(discord.ui.Modal):
             embed.add_field(name="📛 Никнейм", value=answers[0], inline=True)
             embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
             embed.add_field(name="⏳ Время на сервере", value=answers[2], inline=False)
-            embed.add_field(name="💬 Причина", value=answers[3], inline=False)
+            embed.add_field(name="🎬 Причина вступать в киноклуб", value=answers[3], inline=False)
         elif self.app_type == "Девушка":
             embed.add_field(name="👩 Имя", value=answers[0], inline=True)
             embed.add_field(name="🎂 Возраст", value=answers[1], inline=True)
@@ -1623,7 +1756,7 @@ class KingdomBot(commands.Bot):
         self.user_level_cache = {}
 
     async def setup_hook(self):
-        # Основные команды (изначальные)
+        # Основные команды
         self.tree.add_command(lk)
         self.tree.add_command(bind)
         self.tree.add_command(chance)
@@ -1650,7 +1783,12 @@ class KingdomBot(commands.Bot):
         self.tree.add_command(addmessages)
         self.tree.add_command(resetmessages)
 
-        # Команды управления игровыми данными (из minecraft_admin)
+        # Команды Браков
+        self.tree.add_command(marriage_propose)
+        self.tree.add_command(marriage_divorce)
+        self.tree.add_command(marriage_profile)
+
+        # Команды SFTP
         self.tree.add_command(addgroup)
         self.tree.add_command(removegroup)
         self.tree.add_command(listgroups)
@@ -1808,12 +1946,7 @@ class KingdomBot(commands.Bot):
         embed.add_field(name="До", value=before.content[:1024] or "*(пусто)*", inline=False)
         embed.add_field(name="После", value=after.content[:1024] or "*(пусто)*", inline=False)
         embed.set_footer(text=f"ID сообщения: {before.id}")
-        log_channel = before.guild.get_channel(LOGS_CHANNEL_ID)
-        if log_channel:
-            try:
-                await log_channel.send(embed=embed)
-            except Exception as e:
-                print(f"❌ Ошибка отправки лога редактирования: {e}")
+        await send_log(before.guild, "✏️ Сообщение Изменено", f"Пользователь {before.author.mention} отредактировал сообщение в {before.channel.mention}", color=0xf1c40f, fields=[("До", before.content[:500] or "*(пусто)*", False), ("После", after.content[:500] or "*(пусто)*", False)])
 
     async def on_message_delete(self, message: discord.Message):
         if message.author.bot:
@@ -1822,278 +1955,109 @@ class KingdomBot(commands.Bot):
             return
         if message.channel.id == EXCLUDED_LOG_CHANNEL:
             return
-        embed = discord.Embed(title="🗑️ Сообщение удалено", color=0xe74c3c, timestamp=datetime.now(MSK))
-        embed.add_field(name="Автор", value=message.author.mention, inline=True)
-        embed.add_field(name="Канал", value=message.channel.mention, inline=True)
-        embed.add_field(name="Содержание", value=message.content[:1024] or "*(вложение/пусто)*", inline=False)
-        embed.set_footer(text=f"ID сообщения: {message.id}")
-        log_channel = message.guild.get_channel(LOGS_CHANNEL_ID)
-        if log_channel:
-            try:
-                await log_channel.send(embed=embed)
-            except Exception as e:
-                print(f"❌ Ошибка отправки лога удаления: {e}")
-
-    def is_allowed_staff(self, interaction: discord.Interaction) -> bool:
-        m = interaction.user
-        if m.id in CREATOR_AND_ROLE_IDS:
-            return True
-        return any(r.id in [CREATOR_ROLE_ID, FOUNDER_ROLE_ID, MODERATOR_ROLE_ID] for r in m.roles)
-
-    def is_allowed_staff_sync(self, message: discord.Message) -> bool:
-        m = message.author
-        if m.id in CREATOR_AND_ROLE_IDS:
-            return True
-        return any(r.id in [CREATOR_ROLE_ID, FOUNDER_ROLE_ID, MODERATOR_ROLE_ID] for r in m.roles)
-
-    def check_hierarchy(self, moderator: discord.Member, target: discord.Member) -> bool:
-        if moderator.id in CREATOR_AND_ROLE_IDS:
-            return True
-        if is_high_staff(target):
-            return False
-        if target.id in CREATOR_AND_ROLE_IDS or any(r.id in IMMUNE_ROLE_IDS for r in target.roles):
-            return False
-        return target.top_role.position < moderator.top_role.position
-
-    async def on_command_error(self, ctx, error):
-        if isinstance(error, commands.CommandNotFound):
-            return
-        if isinstance(error, commands.MissingPermissions):
-            await ctx.send(make_blockquote("❌ У вас недостаточно прав для выполнения этой команды."))
-            return
-        if isinstance(error, commands.BotMissingPermissions):
-            await ctx.send(make_blockquote("❌ У бота нет необходимых прав для выполнения этого действия."))
-            return
-        print(f"❌ Ошибка в префиксной команде {ctx.command}: {error}")
-        traceback.print_exc()
-
-    async def on_tree_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
-        original_error = getattr(error, 'original', error)
-        if isinstance(original_error, (app_commands.MissingPermissions, app_commands.MissingRole)):
-            msg = "❌ У вас недостаточно прав для использования этой команды."
-        elif isinstance(original_error, app_commands.BotMissingPermissions):
-            missing = ", ".join(original_error.missing_permissions)
-            msg = f"❌ У бота отсутствуют необходимые права: `{missing}`"
-        elif isinstance(original_error, app_commands.CommandOnCooldown):
-            msg = f"⏳ Команда на перезарядке. Подождите `{original_error.retry_after:.1f}` сек."
-        elif isinstance(original_error, (app_commands.TransformerError, app_commands.BadArgument)):
-            msg = "⚠️ Переданы некорректные аргументы для команды."
-        else:
-            msg = "❌ Произошла внутренняя ошибка при выполнении команды. Информация отправлена в логи."
-            print(f"❌ Критическая ошибка в Слэш-команде /{interaction.command.name if interaction.command else 'Unknown'}: {original_error}")
-            traceback.print_exc()
-            if interaction.guild:
-                tb_text = "".join(traceback.format_exception(type(original_error), original_error, original_error.__traceback__))
-                if len(tb_text) > 900:
-                    tb_text = tb_text[:900] + "\n... [срезано]"
-                await send_log(
-                    interaction.guild,
-                    "💥 Ошибка Слэш-Команды",
-                    f"**Команда:** `/{interaction.command.name if interaction.command else 'Unknown'}`\n"
-                    f"**Вызвал:** {interaction.user.mention} (`{interaction.user.id}`)\n"
-                    f"**Канал:** {interaction.channel.mention}\n\n"
-                    f"```python\n{tb_text}\n```",
-                    color=0xff0000
-                )
-        try:
-            if interaction.response.is_done():
-                await interaction.followup.send(make_blockquote(msg), ephemeral=True)
-            else:
-                await interaction.response.send_message(make_blockquote(msg), ephemeral=True)
-        except Exception as e:
-            print(f"❌ Не удалось отправить сообщение об ошибке пользователю: {e}")
-
-    # ==================== ДОБАВЛЕННЫЙ ФУНКЦИОНАЛ: СОЗДАНИЕ ВЕТОК В МЕДИА-КАНАЛЕ ====================
-    MEDIA_THREADS_FILE = "media_threads.json"
-
-    def load_media_threads(self):
-        return load_json(self.MEDIA_THREADS_FILE, {})
-
-    def save_media_threads(self, data):
-        save_json(self.MEDIA_THREADS_FILE, data)
+        await send_log(message.guild, "🗑️ Сообщение Удалено", f"Сообщение от {message.author.mention} удалено в {message.channel.mention}", color=0xe74c3c, fields=[("Содержимое", message.content[:1000] or "*(без текста / файл)*", False)])
 
     async def on_message(self, message: discord.Message):
-        if message.author == self.user:
+        if message.author.bot:
             return
 
-        # ========== ЗАЩИТА ОТ НЕВЕРИФИЦИРОВАННЫХ ==========
-        if isinstance(message.channel, discord.TextChannel) and message.guild:
-            if message.channel.id != BOT_CHANNEL:
-                member = message.author
-                has_verify = any(r.id == VERIFY_ROLE_ID for r in member.roles)
-                if not has_verify and message.channel.category_id != UNVERIFIED_ALLOWED_CATEGORY:
-                    try:
-                        await message.delete()
-                        await message.author.send(f"⚠️ Для отправки сообщений пройдите верификацию в канале <#{VERIFY_CHANNEL_ID}>.")
-                    except:
-                        pass
-                    return
+        # Обработка текстовых команд !send и !брак
+        if message.content.startswith("!send"):
+            if any(r.id == 1526681612337549343 for r in message.author.roles) or message.author.id in CREATOR_AND_ROLE_IDS:
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                raw_args = message.content[5:].strip()
+                if raw_args:
+                    parts = raw_args.split(" ", 1)
+                    embed_color = 0x5865F2
+                    text = raw_args
+                    hex_match = re.match(r'^#?([A-Fa-f0-9]{6})$', parts[0])
+                    if hex_match and len(parts) > 1:
+                        embed_color = int(hex_match.group(1), 16)
+                        text = parts[1]
 
-        # ========== ПОДСЧЁТ СООБЩЕНИЙ И ОБНОВЛЕНИЕ УРОВНЯ ==========
-        if isinstance(message.channel, discord.TextChannel) and message.channel.id in COUNT_CHANNELS:
-            if not message.author.bot:
-                counts = load_message_counts()
-                user_id = str(message.author.id)
-                new_count = counts.get(user_id, 0) + 1
-                counts[user_id] = new_count
-                save_message_counts(counts)
-                await update_user_level(self, message.author, new_count, message.channel)
-
-        # ========== НОВОЕ: СОЗДАНИЕ ВЕТКИ В МЕДИА-КАНАЛЕ ==========
-        if isinstance(message.channel, discord.TextChannel) and message.channel.id == MEDIA_CHANNEL_ID:
-            if not message.author.bot:  # не создаём ветку для сообщений от бота
-                threads_data = self.load_media_threads()
-                if str(message.id) not in threads_data:
-                    try:
-                        # Создаём ветку с названием "Комментарии"
-                        thread = await message.create_thread(
-                            name="Комментарии",
-                            auto_archive_duration=1440  # 24 часа
-                        )
-                        # Сохраняем ID ветки в JSON
-                        threads_data[str(message.id)] = thread.id
-                        self.save_media_threads(threads_data)
-                        # Отправляем приветственное сообщение в ветку
-                        await thread.send(
-                            f"💬 Ветка для комментариев к сообщению от {message.author.mention}.\n"
-                            "Обсуждайте здесь этот пост."
-                        )
-                        print(f"✅ Создана ветка для сообщения {message.id} в канале медиа")
-                    except Exception as e:
-                        print(f"❌ Ошибка создания ветки для сообщения {message.id}: {e}")
-
-        # ========== ОСТАЛЬНАЯ ОБРАБОТКА ==========
-        lowered_content = message.content.lower().strip()
-
-        # Обработка синхронизации
-        if lowered_content.startswith("!sync"):
-            if message.author.id != 1437779380184158249:
+                    embed = discord.Embed(
+                        description=text,
+                        color=embed_color,
+                        timestamp=datetime.now(MSK)
+                    )
+                    embed.set_footer(text="Kingdom of Joy | Объявление", icon_url=message.guild.icon.url if message.guild.icon else None)
+                    await message.channel.send(embed=embed)
+                    await send_log(message.guild, "📨 Отправлено объявление (!send)", f"Руководство {message.author.mention} отправил объявление в {message.channel.mention}", color=embed_color)
                 return
-            parts = message.content.split()
-            scope = parts[1].lower() if len(parts) > 1 else "guild"
-            status_msg = await message.channel.send("⚡ Синхронизирую слэш-команды...")
+
+        if message.content.startswith("!брак"):
+            mentions = message.mentions
+            if not mentions:
+                await message.channel.send(make_blockquote("❌ Укажите пользователя: `!брак @user`"))
+                return
+            target = mentions[0]
+            if target.id == message.author.id:
+                await message.channel.send(make_blockquote("❌ Вы не можете заключить брак с самим собой!"))
+                return
+            if target.bot:
+                await message.channel.send(make_blockquote("❌ Нельзя выходить замуж / жениться на ботах!"))
+                return
+            marriages = load_marriages()
+            if str(message.author.id) in marriages:
+                await message.channel.send(make_blockquote("❌ Вы уже состоите в браке! Сначала разведитесь `!развод`."))
+                return
+            if str(target.id) in marriages:
+                await message.channel.send(make_blockquote(f"❌ Пользователь {target.mention} уже состоит в браке!"))
+                return
+            view = MarriageProposalView(message.author, target)
+            embed = discord.Embed(
+                title="💍 Предложение руки и сердца!",
+                description=f"💖 {target.mention}, пользователь {message.author.mention} предлагает вам вступить в брак!\nВы принимаете предложение?",
+                color=0xff69b4
+            )
+            await message.channel.send(content=f"{target.mention}", embed=embed, view=view)
+            return
+
+        if message.content.startswith("!развод"):
+            marriages = load_marriages()
+            uid = str(message.author.id)
+            if uid not in marriages:
+                await message.channel.send(make_blockquote("❌ Вы не состоите в браке."))
+                return
+            partner_id = marriages[uid]["partner"]
+            del marriages[uid]
+            if str(partner_id) in marriages:
+                del marriages[str(partner_id)]
+            save_marriages(marriages)
+            partner = message.guild.get_member(partner_id)
+            partner_str = partner.mention if partner else f"<@{partner_id}>"
+            await message.channel.send(make_blockquote(f"💔 Брак между {message.author.mention} и {partner_str} был расторгнут."))
+            await send_log(message.guild, "💔 Брак Расторгнут", f"Пользователь {message.author.mention} развёлся с {partner_str}.", color=0xe74c3c)
+            return
+
+        # Реакции и триггеры
+        if any(tr in message.content for tr in BALKAN_TRIGGERS):
+            for emoji in CUSTOM_REACTIONS:
+                try:
+                    await message.add_reaction(emoji)
+                except Exception:
+                    pass
+        if any(tr in message.content for tr in SPECIAL_TRIGGERS):
             try:
-                if scope == "guild":
-                    self.tree.copy_global_to(guild=message.guild)
-                    synced = await self.tree.sync(guild=message.guild)
-                    await status_msg.edit(content=f"✅ **Готово!** Скопировано и синхронизировано: `{len(synced)}` команд.")
-                else:
-                    synced = await self.tree.sync()
-                    await status_msg.edit(content=f"🌐 **Готово!** Глобальная синхронизация завершена: `{len(synced)}` команд.")
-                await send_log(message.guild, "⚡ Ручная Синхронизация (!sync)", "Создатель выполнил синхронизацию слэш-команд.", color=0x2ecc71)
-            except Exception as e:
-                await status_msg.edit(content=f"❌ Ошибка синхронизации: `{e}`")
-            return
+                await message.add_reaction(CROWN_EMOJI)
+            except Exception:
+                pass
 
-        # Префиксные модераторские команды
-        if lowered_content.startswith(("!мут", "!бан", "!варн", "!удалить")):
-            if not self.is_allowed_staff_sync(message):
-                await message.channel.send("❌ У вас недостаточно прав для использования этой команды.", delete_after=5)
-                return
-            parts = message.content.split()
-            cmd = parts[0].lower()
-            if len(parts) < 2:
-                await message.channel.send("⚠️ Использование: `!мут/!бан/!варн @пользователь [время/причина]`", delete_after=5)
-                return
-
-            targets = message.mentions
-            target = targets[0] if targets else None
-
-            if not target and parts[1].isdigit():
-                try:
-                    target = await message.guild.fetch_member(int(parts[1]))
-                except:
-                    pass
-
-            if cmd == "!удалить":
-                try:
-                    amount = int(parts[1])
-                    deleted = await message.channel.purge(limit=amount + 1)
-                    await message.channel.send(make_blockquote(f"🧹 Удалено {len(deleted)-1} сообщений."), delete_after=5)
-                    await send_log(message.guild, "🧹 Очистка ЧАТА", f"Модератор {message.author.mention} очистил `{len(deleted)-1}` сообщений.", color=0x34495e)
-                except Exception as e:
-                    await message.channel.send(f"❌ Ошибка: `{e}`", delete_after=5)
-                return
-
-            if not target:
-                await message.channel.send("❌ Укажите корректного пользователя.", delete_after=5)
-                return
-
-            if is_high_staff(target) or not self.check_hierarchy(message.author, target):
-                await message.channel.send("❌ Нельзя применить действие к этому пользователю.", delete_after=5)
-                return
-
-            if cmd == "!мут":
-                time_str = parts[2] if len(parts) > 2 else "10m"
-                reason = " ".join(parts[3:]) if len(parts) > 3 else "Нарушение правил"
-                duration = parse_duration(time_str)
-                await target.timeout(duration, reason=reason)
-                await message.channel.send(make_blockquote(f"🔇 {target.mention} замучен на **{time_str}**."))
-                await send_log(message.guild, "🔇 Выдан Мут", f"Модератор: {message.author.mention}\nНарушитель: {target.mention}\nСрок: `{time_str}`\nПричина: *{reason}*", color=0xe74c3c)
-
-            elif cmd == "!бан":
-                reason = " ".join(parts[2:]) if len(parts) > 2 else "Нарушение правил"
-                await target.ban(reason=reason)
-                await message.channel.send(make_blockquote(f"🚫 {target.mention} забанен."))
-                await send_log(message.guild, "🚫 Бан", f"Модератор {message.author.mention} забанил {target.mention}.\nПричина: *{reason}*", color=0x900c3f)
-
-            elif cmd == "!варн":
-                reason = " ".join(parts[2:]) if len(parts) > 2 else "Нарушение правил"
-                warns = load_json(WARNS_FILE, {})
-                uid = str(target.id)
-                count = warns.get(uid, 0) + 1
-                if count >= 3:
-                    warns[uid] = 0
-                    save_json(WARNS_FILE, warns)
-                    await target.timeout(timedelta(days=1), reason="3/3 варна")
-                    await message.channel.send(make_blockquote(f"⚡ {target.mention} получил 3/3 варнов и замучен на 1 день!"))
-                    await send_log(message.guild, "⛔ Авто-Мут (3/3 Варна)", f"Пользователь {target.mention} набрал 3 варна и отправлен в мут на 24 часа.", color=0xc0392b)
-                else:
-                    warns[uid] = count
-                    save_json(WARNS_FILE, warns)
-                    await message.channel.send(make_blockquote(f"⚠️ {target.mention} получил варн **({count}/3)**. Причина: *{reason}*"))
-                    await send_log(message.guild, "⚠️ Выдан Варн", f"Модератор: {message.author.mention}\nНарушитель: {target.mention}\nВарны: `{count}/3`\nПричина: *{reason}*", color=0xe67e22)
-            return
-
-        # ========== АВТО-РЕАКЦИИ И ФИЛЬТРЫ ==========
-        for trigger in BALKAN_TRIGGERS:
-            if trigger in message.content:
-                for emoji in CUSTOM_REACTIONS:
-                    try:
-                        await message.add_reaction(emoji)
-                    except:
-                        pass
-                break
-
-        for trigger in SPECIAL_TRIGGERS:
-            if trigger in message.content:
-                try:
-                    await message.add_reaction(CROWN_EMOJI)
-                except:
-                    pass
-                break
-
-        # Фильтр плохих слов
-        badwords_data = load_json(BADWORDS_FILE, {})
-        bad_words = badwords_data.get("words", [])
-        mute_time = badwords_data.get("mute_time", "1h")
-
-        if bad_words and not is_calm_member(message.author):
-            for word in bad_words:
-                if re.search(rf"\b{re.escape(word)}\b", message.content, re.IGNORECASE):
-                    try:
-                        await message.delete()
-                        duration = parse_duration(mute_time)
-                        await message.author.timeout(duration, reason=f"Использование запрещенных слов: {word}")
-                        await message.channel.send(make_blockquote(f"🔇 {message.author.mention} замучен на **{mute_time}** за использование запрещенных слов."), delete_after=10)
-                        await send_log(message.guild, "🛡️ Авто-Мут (Запрещенные слова)", f"Пользователь: {message.author.mention}\nСлово: `{word}`\nМут: `{mute_time}`", color=0xe74c3c)
-                    except Exception as e:
-                        print(f"❌ Ошибка фильтра плохих слов: {e}")
-                    break
+        # Подсчёт сообщений в разрешённых каналах
+        if message.guild and message.channel.id in COUNT_CHANNELS:
+            counts = load_message_counts()
+            uid = str(message.author.id)
+            counts[uid] = counts.get(uid, 0) + 1
+            save_message_counts(counts)
+            await update_user_level(self, message.author, counts[uid], message.channel)
 
         await self.process_commands(message)
 
 # ==================== ЗАПУСК БОТА ====================
+bot = KingdomBot()
+
 if __name__ == "__main__":
-    bot = KingdomBot()
     bot.run(TOKEN)
