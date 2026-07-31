@@ -2095,9 +2095,16 @@ async def reminders_loop():
 async def before_reminders():
     await bot.wait_until_ready()
 
+# ==================== ИСПРАВЛЕННЫЙ БЛОК ЗАПУСКА ====================
+async def main():
+    async with bot:
+        reminders_loop.start()
+        await bot.start(TOKEN)
+
 if __name__ == "__main__":
-    reminders_loop.start()
     try:
-        bot.run(TOKEN)
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Бот остановлен.")
     except Exception as e:
         print(f"❌ Ошибка при запуске бота: {e}")
