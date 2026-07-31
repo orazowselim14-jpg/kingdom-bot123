@@ -1977,4 +1977,202 @@ class ApplicationVerdictView(discord.ui.View):
                     pass
             await interaction.message.edit(view=None)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)      #КОНЕЦ 
+            elif app_type == "Маппер":
+                    self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
+                    self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
+                    self.add_item(discord.ui.TextInput(label="Примеры работ / портфолио", placeholder="Ссылки на ваши карты или работы", style=discord.TextStyle.paragraph, max_length=1000, required=True))
+                elif app_type == "Киноклуб":
+                    self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
+                    self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
+                    self.add_item(discord.ui.TextInput(label="Любимые жанры и фильмы", placeholder="Расскажите о ваших вкусах в кино", style=discord.TextStyle.paragraph, max_length=500, required=True))
+                elif app_type == "Девушка":
+                    self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
+                    self.add_item(discord.ui.TextInput(label="Ссылка на соцсети / связь", placeholder="Для подтверждения верификации", max_length=100, required=True))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        thread = await interaction.channel.create_thread(
+            name=f"📝-заявка-{self.app_type}-{interaction.user.name}",
+            type=discord.ChannelType.private_thread,
+            invitable=False
+        )
+        await thread.add_user(interaction.user)
+        await interaction.followup.send(f"✨ Ваша заявка успешно отправлена в личный сектор: {thread.mention}", ephemeral=True)
+        
+        embed = discord.Embed(
+            title=f"📝 Заявка на должность: {self.app_type}",
+            description=f"**Кандидат:** {interaction.user.mention} (ID: `{interaction.user.id}`)",
+            color=0x5865F2,
+            timestamp=datetime.now(MSK)
+        )
+        for child in self.children:
+            if isinstance(child, discord.ui.TextInput):
+                embed.add_field(name=child.label, value=child.value if child.value else "Не указано", inline=False)
+        embed.set_footer(text="Kingdom of Joy | Applications System", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+        
+        pings = f"<@&{CREATOR_ROLE_ID}> <@&{FOUNDER_ROLE_ID}>"
+        if self.app_type == "Модератор чата":
+            pings += f" <@&{MODERATOR_ROLE_ID}>"
+        elif self.app_type == "Маппер":
+            pings += f" <@&{ROLE_MAPPER}>"
+        elif self.app_type == "Киноклуб":
+            pings += f" <@&{ROLE_CINEMA}>"
+        elif self.app_type == "Девушка":
+            pings += f" <@&{ROLE_GIRL}>"
+
+        await thread.send(
+            content=f"🔔 **Новая заявка!** Проверяющие: {pings}",
+            embed=embed,
+            view=ApplicationReviewView(),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=True)
+        )
+        await send_log(interaction.guild, "📝 Подана Заявка", f"Пользователь {interaction.user.mention} подал заявку на **{self.app_type}** в ветке {thread.mention}", color=0x3498db)
+
+class ApplicationReviewView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Одобрить", style=discord.ButtonStyle.success, emoji="✅", custom_id="app_approve_btn")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_creator_or_founder(interaction.user):
+            await interaction.response.send_message("❌ Доступно только Создателям или Основателям.", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.send_message(make_blockquote("🟢 **Заявка официально одобрена!**"))
+        await interaction.channel.edit(locked=True, archived=True)
+        await send_log(interaction.guild, "🟢 Заявка Одобрена", f"Заявка в ветке {interaction.channel.mention} была одобрена {interaction.user.mention}.", color=0x2ecc71)
+
+    @discord.ui.button(label="Отклонить", style=discord.ButtonStyle.danger, emoji="❌", custom_id="app_reject_btn")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_creator_or_founder(interaction.user):
+            await interaction.response.send_message("❌ Доступно только Создателям или Основателям.", ephemeral=True)
+            return
+        self.stop()
+        await interaction.response.send_message(make_blockquote("🔴 **Заявка отклонена.**"))
+        await interaction.channel.edit(locked=True, archived=True)
+        await send_log(interaction.guild, "🔴 Заявка Отклонена", f"Заявка в ветке {interaction.channel.mention} была отклонена {interaction.user.mention}.", color=0xe74c3c)
+
+# ==================== ИНИЦИАЛИЗАЦИЯ БОТА ====================
+class KingdomBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.all()
+        super().__init__(command_prefix="!", intents=intents)
+        self.user_level_cache = {}
+
+    async def setup_hook(self):
+        commands_list = [
+            marriage_propose, marriage_divorce, marriage_profile, set_dr, get_dr,
+            mafia_cmd, lk, bind, chance, sync_cmd, test_welcome, remind, badwords,
+            warnlist, give_temp_role, warn, unwarn, mute, unmute, ban, unban,
+            delete, staff, setup_support, setup_applications, messages, top,
+            setmessages, addmessages, resetmessages, send_cmd, addgroup,
+            removegroup, listgroups, setbalance, addbalance, takebalance,
+            setrelic, addrelic, takerelic, resetplayer
+        ]
+        for cmd in commands_list:
+            self.tree.add_command(cmd)
+
+        self.add_view(SupportHubView())
+        self.add_view(ApplicationView())
+        self.add_view(IdeaVotingView())
+
+    async def on_ready(self):
+        print(f"✅ Бот {self.user} успешно запущен и готов к работе!")
+        counts = load_message_counts()
+        for uid, count in counts.items():
+            self.user_level_cache[int(uid)] = get_level(count)
+
+    async def on_message(self, message):
+        if message.author.bot:
+            return
+
+        badwords_data = load_json(BADWORDS_FILE, {})
+        words = badwords_data.get("words", [])
+        mute_time_str = badwords_data.get("mute_time", "1h")
+
+        if words and not is_high_staff(message.author):
+            content_lower = message.content.lower()
+            if any(w in content_lower for w in words):
+                try:
+                    await message.delete()
+                    duration = parse_duration(mute_time_str)
+                    await message.author.timeout(duration, reason="Нарушение фильтра нецензурных слов")
+                    await message.channel.send(make_blockquote(f"⚠️ {message.author.mention}, ваше сообщение содержало запрещенные слова и было удалено. Вы получили мут на **{mute_time_str}**."))
+                    await send_log(message.guild, "🚫 Фильтр Слов", f"Сообщение от {message.author.mention} удалено. Выдан мут на `{mute_time_str}`.", color=0xe74c3c)
+                except Exception as e:
+                    print(f"❌ Ошибка фильтра слов: {e}")
+                return
+
+        if message.channel.id in COUNT_CHANNELS:
+            counts = load_message_counts()
+            uid = str(message.author.id)
+            current = counts.get(uid, 0) + 1
+            counts[uid] = current
+            save_message_counts(counts)
+            await update_user_level(self, message.author, current, message.channel)
+
+        await self.process_commands(message)
+
+    async def find_player_by_discord(self, discord_id: str, users_data: dict):
+        players = users_data.get("players", {})
+        for uuid, data in players.items():
+            if str(data.get("discord-id")) == str(discord_id):
+                return uuid, data
+        return None
+
+    async def find_player_by_id(self, player_id: int, users_data: dict):
+        players = users_data.get("players", {})
+        for uuid, data in players.items():
+            if data.get("player-id") == player_id:
+                return uuid, data
+        return None
+
+    async def find_player_by_nick(self, nick: str, users_data: dict):
+        uuid = await get_uuid_by_name(nick)
+        if not uuid:
+            return None
+        uuid_clean = uuid.replace("-", "")
+        players = users_data.get("players", {})
+        if uuid_clean in players:
+            return uuid_clean, players[uuid_clean]
+        return None
+
+    def get_group_prefix(self, group_name: str, users_data: dict) -> str:
+        return ""
+
+bot = KingdomBot()
+
+@tasks.loop(minutes=1)
+async def reminders_loop():
+    reminders = load_json(REMINDERS_FILE, [])
+    if not reminders:
+        return
+    now_ts = int(datetime.now(MSK).timestamp())
+    remaining = []
+    for r in reminders:
+        if r["unix"] <= now_ts:
+            try:
+                channel = bot.get_channel(r["channel_id"])
+                user = await bot.fetch_user(r["user_id"])
+                if channel:
+                    await channel.send(make_blockquote(f"⏰ {user.mention}, напоминание: **{r['text']}**"))
+                elif user:
+                    await user.send(make_blockquote(f"⏰ Напоминание: **{r['text']}**"))
+            except Exception as e:
+                print(f"❌ Ошибка отправки напоминания: {e}")
+        else:
+            remaining.append(r)
+    save_json(REMINDERS_FILE, remaining)
+
+@reminders_loop.before_loop
+async def before_reminders():
+    await bot.wait_until_ready()
+
+if __name__ == "__main__":
+    reminders_loop.start()
+    try:
+        bot.run(TOKEN)
+    except Exception as e:
+        print(f"❌ Ошибка при запуске бота: {e}")
+            
