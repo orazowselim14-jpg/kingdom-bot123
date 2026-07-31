@@ -513,224 +513,501 @@ async def get_dr(interaction: discord.Interaction, user: discord.Member = None):
         return
     await interaction.response.send_message(make_blockquote(f"🎂 День рождения {target.mention}: **{bdate}**"))
 
-# ==================== СИСТЕМА МАФИИ ====================
+# ==================== СИСТЕМА МАФИИ (ПОЛНЫЙ РЕВОРК С ПУТАНОЙ, ДИСКУССИЯМИ И ГОЛОСОВАНИЕМ) ====================
+mafia_configs = {} # guild_id: {"mafia": X, "doctor": Y, "detective": Z, "barman": W, "harlot": H}
+
 class MafiaGame:
-    def __init__(self, bot, channel: discord.TextChannel, starter: discord.Member):
+    def __init__(self, bot, channel, starter):
         self.bot = bot
         self.channel = channel
         self.starter = starter
         self.participants = []
-        self.is_running = True
-        self.registration_active = True
-        self.time_left = 180  # 3 minutes (180 секунд)
-        self.timer_task = None
+        self.alive = []
+        self.roles = {}
+        self.choices = {} # id_игрока: id_цели (кого выбрал)
+        self.actions_done = {"don_investigate": False, "detective_shot": False}
         self.message = None
+        self.game_over = False
+        self.night_phase = False
+        self.votes = {} # {victim_id: [voter_ids]}
+        self.day_message = None
 
-class MafiaRegistrationView(discord.ui.View):
-    def __init__(self, game: MafiaGame):
-        super().__init__(timeout=None)
-        self.game = game
+    def get_alive_players_list(self):
+        return [p for p in self.alive if p in self.participants]
 
-    @discord.ui.button(label="Участвовать в Мафии 🕶️", style=discord.ButtonStyle.primary, custom_id="mafia_join_btn")
-    async def join_mafia(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.game.registration_active:
-            await interaction.response.send_message("❌ Регистрация на игру уже завершена!", ephemeral=True)
-            return
-        if interaction.user in self.game.participants:
-            await interaction.response.send_message("⚠️ Вы уже зарегистрированы на игру!", ephemeral=True)
-            return
-        if len(self.game.participants) >= 30:
-            await interaction.response.send_message("❌ Достигнут лимит участников (30 человек).", ephemeral=True)
-            return
-        
-        # Защита: проверяем, открыты ли у игрока личные сообщения (путем тестовой отправки)
-        try:
-            test_msg = await interaction.user.send("🛡️ Проверка личных сообщений для игры в Мафию успешна! Вы допущены к регистрации.")
-            try:
-                await test_msg.delete()
-            except:
-                pass
-        except discord.Forbidden:
-            await interaction.response.send_message("❌ У вас закрыты личные сообщения! Откройте ЛС в настройках Discord, чтобы бот мог выдать вам роль, и попробуйте снова.", ephemeral=True)
-            return
-        except Exception:
-            await interaction.response.send_message("❌ Не удалось отправить вам личное сообщение. Убедитесь, что ваши ЛС открыты.", ephemeral=True)
-            return
+    def check_win(self):
+        mafia = [p for p in self.alive if self.roles.get(p.id) in ["Мафия", "Дон"]]
+        town = [p for p in self.alive if self.roles.get(p.id) not in ["Мафия", "Дон"]]
+        if len(mafia) >= len(town):
+            return "Мафия"
+        if len(mafia) == 0:
+            return "Город"
+        return None
 
-        self.game.participants.append(interaction.user)
-        await interaction.response.send_message(f"✅ {interaction.user.mention} успешно зарегистрировался на игру в Мафию!", ephemeral=True)
+    async def start_night(self):
+        self.night_phase = True
+        self.choices = {}
+        alive = self.get_alive_players_list()
+        alive_ids = [p.id for p in alive]
 
-    @discord.ui.button(label="⏱️ Продлить (+30с)", style=discord.ButtonStyle.secondary, custom_id="mafia_extend_btn")
-    async def extend_time(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_creator_or_founder(interaction.user):
-            await interaction.response.send_message("❌ Продлевать регистрацию могут только Создатели или Основатели!", ephemeral=True)
-            return
-        if not self.game.registration_active:
-            await interaction.response.send_message("❌ Регистрация уже завершена.", ephemeral=True)
-            return
-        self.game.time_left += 30
-        await interaction.response.send_message(f"⏱️ Руководитель {interaction.user.mention} продлил регистрацию на 30 секунд! Осталось: {self.game.time_left} сек.", ephemeral=False)
+        embed = discord.Embed(
+            title="🌙 Наступила ночь!",
+            description="Всем особым ролям были отправлены ЛС.\nУ вас есть время, чтобы выбрать свои цели.\nГолосование завершится, как только все роли сделают выбор!",
+            color=0x222222
+        )
+        await self.channel.send(embed=embed)
 
-    @discord.ui.button(label="▶️ Начать игру", style=discord.ButtonStyle.success, custom_id="mafia_start_btn")
-    async def start_game_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_creator_or_founder(interaction.user):
-            await interaction.response.send_message("❌ Останавливать регистрацию и запускать игру могут только Создатели или Основатели!", ephemeral=True)
-            return
-        if not self.game.registration_active:
-            await interaction.response.send_message("❌ Регистрация уже завершена или игра уже идет.", ephemeral=True)
-            return
-        if len(self.game.participants) < 3:
-            await interaction.response.send_message("❌ Недостаточно участников для запуска игры (минимум 3).", ephemeral=True)
-            return
-        
-        self.game.registration_active = False
-        if self.game.timer_task:
-            self.game.timer_task.cancel()
-        
-        await interaction.response.send_message(f"🚀 Руководитель {interaction.user.mention} принудительно завершил регистрацию и запускает игру!")
-        await self.game.bot.start_mafia_match(self.game)
-
-    @discord.ui.button(label="❌ Отменить игру", style=discord.ButtonStyle.danger, custom_id="mafia_cancel_btn")
-    async def cancel_game_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_creator_or_founder(interaction.user):
-            await interaction.response.send_message("❌ Отменять игру могут только Создатели или Основатели!", ephemeral=True)
-            return
-        
-        self.game.registration_active = False
-        self.game.is_running = False
-        if self.game.timer_task:
-            self.game.timer_task.cancel()
-        
-        for child in self.children:
-            child.disabled = True
-        
-        try:
-            await interaction.message.edit(view=self)
-        except:
-            pass
-        
-        await interaction.response.send_message(f"🛑 Игра в Мафию была полностью отменена создателем/основателем {interaction.user.mention}.")
-        await send_log(interaction.guild, "🛑 Мафия Отменена", f"Создатель/основатель {interaction.user.mention} отменил текущую игру в Мафию.", color=0xe74c3c)
-
-async def mafia_timer_loop(bot, game: MafiaGame):
-    # Цикл напоминаний и обновления каждые 3 секунды в течение 3 минут (180 сек)
-    while game.registration_active and game.time_left > 0:
-        await asyncio.sleep(3)
-        if not game.registration_active:
-            break
-        game.time_left -= 3
-        
-        if game.message:
-            embed = discord.Embed(
-                title="🕶️ Регистрация на игру в Мафию",
-                description=(
-                    f"Регистрация активна!\n"
-                    f"⏱️ Осталось времени: **{game.time_left} сек.**\n"
-                    f"👥 Зарегистрировано участников: **{len(game.participants)} / 30**\n\n"
-                    f"⚠️ Напоминание: каждые 3 секунды обновление таймера. Убедитесь, что у вас открыты личные сообщения[cite: 12]."
-                ),
-                color=0x7864c8,
-                timestamp=datetime.now(MSK)
-            )
-            embed.set_footer(text="Kingdom of Joy | Mafia System")
-            try:
-                await game.message.edit(embed=embed)
-            except Exception:
-                pass
-        
-        if game.time_left <= 0:
-            game.registration_active = False
-            break
-
-    if not game.registration_active and game.is_running:
-        if len(game.participants) >= 3:
-            await bot.start_mafia_match(game)
-        else:
-            if game.message:
+        # Рассылаем меню по ролям
+        for p in alive:
+            role = self.roles.get(p.id)
+            if role in ["Мафия", "Дон", "Доктор", "Детектив", "Бармен", "Путана"]:
                 try:
-                    await game.channel.send("❌ Время регистрации истекло, но набралось менее 3 участников. Игра отменена.")
+                    await p.send(f"🕵️ **Ночь началась!** Твоя роль: **{role}**", view=self.get_role_view(p, alive_ids))
                 except:
                     pass
 
-# Метод старта матча и отправки ролей в ЛС
-async def start_mafia_match(bot, game: MafiaGame):
-    game.registration_active = False
-    game.is_running = True
+        # Ожидание выбора (60 секунд, но завершится раньше, если все проголосовали)
+        start_time = datetime.now(MSK)
+        needed_roles = [p for p in alive if self.roles.get(p.id) in ["Мафия", "Дон", "Доктор", "Детектив", "Бармен", "Путана"]]
+        while datetime.now(MSK) - start_time < timedelta(seconds=60):
+            if len(self.choices) >= len(needed_roles):
+                break
+            await asyncio.sleep(1)
+
+        self.night_phase = False
+        await self.resolve_night()
+
+    def get_role_view(self, player, alive_ids):
+        role = self.roles.get(player.id)
+        alive_members = [p for p in self.participants if p.id in alive_ids and p.id != player.id]
+        
+        if role == "Мафия":
+            return MafiaActionView(self, player, alive_members)
+        elif role == "Дон":
+            return DonActionView(self, player, alive_members)
+        elif role == "Доктор":
+            return DoctorActionView(self, player, alive_members)
+        elif role == "Детектив":
+            return DetectiveActionView(self, player, alive_members)
+        elif role == "Бармен":
+            return BarmanActionView(self, player, alive_members)
+        elif role == "Путана":
+            return HarlotActionView(self, player, alive_members)
+        return None
+
+    async def resolve_night(self):
+        # Получаем результаты выборов
+        mafia_target = self.choices.get("mafia") # ID жертвы
+        doctor_target = self.choices.get("doctor")
+        barman_target = self.choices.get("barman")
+        detective_invest = self.choices.get("detective_invest")
+        detective_shoot = self.choices.get("detective_shoot")
+        harlot_target = self.choices.get("harlot") # ID цели путаны
+
+        dead_players = []
+        message_lines = []
+        night_silent = False # Переменная для отмены убийства мафией
+
+        # Логика Путаны (блокировка ролей)
+        harlot_blocked = None
+        if harlot_target:
+            harlot_victim = discord.utils.get(self.participants, id=harlot_target)
+            if harlot_victim:
+                blocked_role = self.roles.get(harlot_victim.id)
+                harlot_blocked = harlot_victim
+                if blocked_role in ["Мафия", "Дон"]:
+                    night_silent = True
+                    message_lines.append(f"🥂 **Путана** соблазнила мафию! Убийство сорвано этой ночью!")
+                elif blocked_role == "Доктор":
+                    doctor_target = None # Доктор не может лечить
+                    message_lines.append(f"🥂 **Путана** соблазнила доктора! Он проспал и никого не спас.")
+                elif blocked_role == "Детектив":
+                    detective_shoot = None
+                    detective_invest = None # Детектив не может действовать
+                    message_lines.append(f"🥂 **Путана** соблазнила детектива! Тот потерял бдительность.")
+                elif blocked_role == "Бармен":
+                    barman_target = None
+                    message_lines.append(f"🥂 **Путана** соблазнила бармена! Он забыл про свои напитки.")
+
+        # Логика Детектива: Убийство или Расследование
+        detective_player = None
+        for p in self.participants:
+            if self.roles.get(p.id) == "Детектив":
+                detective_player = p
+                break
+
+        if detective_shoot and not harlot_blocked == detective_player:
+            target_p = discord.utils.get(self.participants, id=int(detective_shoot))
+            if target_p and self.roles.get(target_p.id) in ["Мафия", "Дон"]:
+                dead_players.append(target_p)
+                message_lines.append(f"🔫 **Детектив** застрелил мафию: {target_p.mention}!")
+            elif target_p:
+                dead_players.append(detective_player)
+                message_lines.append(f"💔 **Детектив** застрелил мирного жителя {target_p.mention} и выбывает сам!")
+        elif detective_invest and not harlot_blocked == detective_player:
+            target_p = discord.utils.get(self.participants, id=int(detective_invest))
+            if target_p and detective_player:
+                try:
+                    role_info = self.roles.get(target_p.id, "Неизвестно")
+                    await detective_player.send(f"🔍 **Результат проверки:** Игрок {target_p.display_name} — роль **{role_info}**")
+                except: pass
+
+        # Логика Мафии: Убийство (если Путана не заблокировала)
+        if mafia_target and not night_silent:
+            victim = discord.utils.get(self.participants, id=mafia_target)
+            if victim and victim not in dead_players:
+                saved = False
+                # Спасает ли Доктор?
+                if doctor_target == mafia_target:
+                    saved = True
+                    message_lines.append(f"🏥 **Доктор** спас {victim.mention} от смерти!")
+                # Спасает ли Бармен?
+                if barman_target == mafia_target:
+                    saved = True
+                    message_lines.append(f"🍺 **Бармен** напоил {victim.mention} и тот уснул, избежав смерти!")
+                
+                if not saved:
+                    dead_players.append(victim)
+                    message_lines.append(f"🔪 **Мафия** жестоко убила {victim.mention}!")
+                else:
+                    message_lines.append(f"🌙 Покушение на {victim.mention} провалилось!")
+
+        if not dead_players and not message_lines:
+            message_lines.append("🌅 Наступило утро. Ночь прошла тихо, все живы.")
+        elif not dead_players and night_silent:
+            pass # Путана уже написала сообщение про соблазнение
+
+        # Удаляем мертвых из списка живых
+        for p in dead_players:
+            if p in self.alive:
+                self.alive.remove(p)
+
+        winner = self.check_win()
+        if winner:
+            embed = discord.Embed(title="🏆 Игра окончена!", description=f"Победила фракция: **{winner}**", color=0xffd700)
+            await self.channel.send(embed=embed)
+            self.game_over = True
+            return
+
+        # ДЕНЬ: Дискуссия и Голосование
+        embed = discord.Embed(title="🌅 Утро", description="\n".join(message_lines), color=0x7864c8)
+        embed.set_footer(text="Начинается обсуждение! У вас есть 60 секунд на споры и аргументы.")
+        self.day_message = await self.channel.send(embed=embed)
+
+        # 1. Фаза Дискуссии
+        await asyncio.sleep(60)
+        
+        # 2. Фаза Голосования
+        embed = discord.Embed(title="🗳️ Начинается голосование!", description="Введите `!голос @Игрок`.\nГолосование завершится **моментально**, как только все живые игроки проголосуют, либо через 40 секунд по таймеру.", color=0x2ecc71)
+        await self.channel.send(embed=embed)
+
+        self.votes = {}
+        start_time = datetime.now(MSK)
+        total_alive = len(self.alive)
+
+        while datetime.now(MSK) - start_time < timedelta(seconds=40):
+            if len(self.votes) >= total_alive:
+                break
+            await asyncio.sleep(1)
+
+        # Подводим итоги голосования
+        most_voted = None
+        max_votes = 0
+        for target_id, voters in self.votes.items():
+            if len(voters) > max_votes:
+                max_votes = len(voters)
+                most_voted = target_id
+
+        if most_voted:
+            banished = discord.utils.get(self.participants, id=most_voted)
+            if banished and banished in self.alive:
+                self.alive.remove(banished)
+                await self.channel.send(f"💀 По результатам голосования игрок {banished.mention} был изгнан из города!")
+        else:
+            await self.channel.send("🗳️ Никто не набрал достаточно голосов, сегодня никто не вылетает.")
+
+        winner = self.check_win()
+        if winner:
+            embed = discord.Embed(title="🏆 Игра окончена!", description=f"Победила фракция: **{winner}**", color=0xffd700)
+            await self.channel.send(embed=embed)
+            self.game_over = True
+            return
+
+        # Следующая ночь
+        if not self.game_over:
+            await self.start_night()
+
+# ==================== VIEWS ДЛЯ МАФИИ (Меню в ЛС) ====================
+class BaseActionView(discord.ui.View):
+    def __init__(self, game, player, alive_members, timeout=60):
+        super().__init__(timeout=timeout)
+        self.game = game
+        self.player = player
+        self.alive_members = alive_members
+
+    def make_target_select(self, placeholder, custom_id):
+        options = []
+        for m in self.alive_members:
+            options.append(discord.SelectOption(label=m.display_name, value=str(m.id), emoji="🎯"))
+        if not options:
+            options.append(discord.SelectOption(label="Некого выбирать", value="0"))
+        select = discord.ui.Select(placeholder=placeholder, options=options, custom_id=custom_id, min_values=1, max_values=1)
+        return select
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.player.id
+
+class MafiaActionView(BaseActionView):
+    @discord.ui.select(placeholder="Выберите жертву для убийства 👇", custom_id="mafia_target")
+    async def select_target(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.game.choices["mafia"] = int(select.values[0])
+        await interaction.response.send_message(f"✅ Вы выбрали убить <@{select.values[0]}>. Ожидайте рассвета!", ephemeral=True)
+        self.stop()
+
+class DonActionView(BaseActionView):
+    def __init__(self, game, player, alive_members):
+        super().__init__(game, player, alive_members)
+        # Добавляем кнопку расследования, если ещё не использовали
+        if not self.game.actions_done["don_investigate"]:
+            self.add_item(DonInvestigateButton())
+
+    @discord.ui.select(placeholder="Выберите жертву для убийства 👇", custom_id="don_target")
+    async def select_target(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.game.choices["mafia"] = int(select.values[0]) # Дон тоже участвует в убийстве
+        await interaction.response.send_message(f"✅ Дон выбрал убить <@{select.values[0]}>. Ожидайте рассвета!", ephemeral=True)
+        self.stop()
+
+class DonInvestigateButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="🔍 Прошмонать игрока (1 раз)", style=discord.ButtonStyle.primary)
+    async def callback(self, interaction: discord.Interaction):
+        view = DonInvestView(interaction.client.mafia_game, interaction.user, interaction.client.mafia_game.get_alive_players_list())
+        await interaction.response.send_message("Выберите игрока для проверки:", view=view, ephemeral=True)
+
+class DonInvestView(BaseActionView):
+    @discord.ui.select(placeholder="Кого проверить?", custom_id="don_invest_select")
+    async def select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.game.actions_done["don_investigate"] = True
+        self.game.choices["don_investigate"] = int(select.values[0])
+        await interaction.response.send_message(f"✅ Дон отправил запрос на проверку!", ephemeral=True)
+        self.stop()
+
+class DoctorActionView(BaseActionView):
+    @discord.ui.select(placeholder="Выберите, кого спасти сегодня ночью 👇", custom_id="doctor_target")
+    async def select_target(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.game.choices["doctor"] = int(select.values[0])
+        await interaction.response.send_message(f"✅ Вы выбрали спасти <@{select.values[0]}>. Ожидайте рассвета!", ephemeral=True)
+        self.stop()
+
+class BarmanActionView(BaseActionView):
+    @discord.ui.select(placeholder="Выберите, кого напоить (усыпить) 👇", custom_id="barman_target")
+    async def select_target(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.game.choices["barman"] = int(select.values[0])
+        await interaction.response.send_message(f"✅ Вы выбрали напоить <@{select.values[0]}>. Ожидайте рассвета!", ephemeral=True)
+        self.stop()
+
+class HarlotActionView(BaseActionView):
+    @discord.ui.select(placeholder="Кого соблазнить этой ночью? 👇", custom_id="harlot_target")
+    async def select_target(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.game.choices["harlot"] = int(select.values[0])
+        await interaction.response.send_message(f"✅ Вы выбрали соблазнить <@{select.values[0]}>. Ожидайте рассвета!", ephemeral=True)
+        self.stop()
+
+class DetectiveActionView(BaseActionView):
+    def __init__(self, game, player, alive_members):
+        super().__init__(game, player, alive_members)
+        self.add_item(DetectiveInvestigateButton())
+        self.add_item(DetectiveShootButton())
+
+class DetectiveInvestigateButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="🔍 Прошмонать игрока", style=discord.ButtonStyle.primary, custom_id="det_invest")
+    async def callback(self, interaction: discord.Interaction):
+        view = DetectiveInvestView(interaction.client.mafia_game, interaction.user, interaction.client.mafia_game.get_alive_players_list())
+        await interaction.response.send_message("Выберите игрока для проверки:", view=view, ephemeral=True)
+
+class DetectiveShootButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="🔫 Выстрелить в игрока", style=discord.ButtonStyle.danger, custom_id="det_shoot")
+    async def callback(self, interaction: discord.Interaction):
+        view = DetectiveShootView(interaction.client.mafia_game, interaction.user, interaction.client.mafia_game.get_alive_players_list())
+        await interaction.response.send_message("Выберите игрока для выстрела:", view=view, ephemeral=True)
+
+class DetectiveInvestView(BaseActionView):
+    @discord.ui.select(placeholder="Кого проверить?", custom_id="det_invest_select")
+    async def select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.game.choices["detective_invest"] = int(select.values[0])
+        await interaction.response.send_message(f"✅ Запрос на проверку отправлен!", ephemeral=True)
+        self.stop()
+
+class DetectiveShootView(BaseActionView):
+    @discord.ui.select(placeholder="В кого стрелять?", custom_id="det_shoot_select")
+    async def select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        self.game.choices["detective_shoot"] = int(select.values[0])
+        await interaction.response.send_message(f"✅ Вы стреляете в <@{select.values[0]}>. Ожидайте рассвета!", ephemeral=True)
+        self.stop()
+
+# ==================== КОМАНДА ЗАПУСКА МАФИИ ====================
+@app_commands.command(name="mafia", description="🕶️ Запустить новую игру в Мафию")
+async def mafia_cmd(interaction: discord.Interaction):
+    if not is_creator_or_founder(interaction.user) and not any(r.id in HIGHER_ROLES for r in interaction.user.roles):
+        await interaction.response.send_message("❌ Запускать игру могут только модераторы и руководство.", ephemeral=True)
+        return
     
-    participants = game.participants
-    if len(participants) < 3:
+    await interaction.response.defer()
+    config = mafia_configs.get(interaction.guild_id, {})
+    game = MafiaGame(interaction.client, interaction.channel, interaction.user)
+    
+    # Добавляем лояльность к боту, чтобы передавать game в View через client
+    interaction.client.mafia_game = game
+
+    embed = discord.Embed(
+        title="🕶️ Регистрация на игру в Мафию",
+        description=(
+            f"Игру создал: {interaction.user.mention}\n"
+            f"⏱️ Время регистрации: **90 секунд**\n"
+            f"👥 Нажмите кнопку ниже, чтобы участвовать!\n\n"
+            f"⚠️ **Внимание:** Для участия в игре у вас должны быть **открыты личные сообщения**."
+        ),
+        color=0x7864c8
+    )
+    view = MafiaRegistrationView(game)
+    await interaction.followup.send(embed=embed, view=view)
+    msg = await interaction.original_response()
+    game.message = msg
+
+    await asyncio.sleep(90)
+    
+    if not view.is_active:
         return
 
-    random.shuffle(participants)
-    assigned_roles = {}
-    
-    for i, player in enumerate(participants):
-        if i == 0:
-            role = "Мафия 🦹‍♂️"
-        elif i == 1:
-            role = "Шериф 🕵️‍♂️"
-        else:
-            role = "Мирный житель 🧑"
-        assigned_roles[player.id] = role
+    view.stop()
+    if len(game.participants) < 4:
+        await interaction.channel.send("❌ Слишком мало участников для игры (минимум 4). Игра отменена.")
+        return
 
-    # Выдача ролей строго в личные сообщения
-    success_count = 0
-    for player in participants:
-        role = assigned_roles[player.id]
+    # Настройка ролей в зависимости от количества игроков и конфига
+    participants = game.participants
+    random.shuffle(participants)
+    game.alive = participants[:]
+
+    # Логика распределения ролей
+    roles_to_assign = []
+    
+    # Получаем настройки или ставим по умолчанию
+    mafia_count = config.get("mafia", 1)
+    doctor_count = config.get("doctor", 1)
+    detective_count = config.get("detective", 0)
+    barman_count = config.get("barman", 0)
+    harlot_count = config.get("harlot", 0)
+
+    # Автоматическая настройка по умолчанию, если не задана конфигами
+    if len(participants) >= 6:
+        if detective_count == 0: detective_count = 1
+        if harlot_count == 0: harlot_count = 1
+    if len(participants) >= 8:
+        if barman_count == 0: barman_count = 1
+    if len(participants) >= 10:
+        if mafia_count == 1: mafia_count = 2
+
+    # Собираем список ролей в пул
+    for _ in range(mafia_count): roles_to_assign.append("Мафия")
+    if mafia_count >= 1: roles_to_assign.append("Дон") # Дон всегда 1, если есть мафия
+    for _ in range(doctor_count): roles_to_assign.append("Доктор")
+    for _ in range(detective_count): roles_to_assign.append("Детектив")
+    for _ in range(barman_count): roles_to_assign.append("Бармен")
+    for _ in range(harlot_count): roles_to_assign.append("Путана")
+
+    for i, p in enumerate(participants):
+        if i < len(roles_to_assign):
+            game.roles[p.id] = roles_to_assign[i]
+        else:
+            game.roles[p.id] = "Мирный житель"
+
+    # Выдача ролей в ЛС
+    for p in participants:
+        role = game.roles[p.id]
         try:
-            await player.send(
-                f"🎮 **Игра в Мафию началась!**\n"
-                f"Ваша секретная роль на эту игру: **{role}**\n"
-                f"Удачи в игре!"
-            )
-            success_count += 1
-        except Exception:
+            await p.send(f"🎮 **Игра в Мафию началась!**\nВаша роль: **{role}**\nСкоро наступит ночь, будьте внимательны к ЛС.")
+        except:
             pass
 
     embed = discord.Embed(
         title="🎬 Игра в Мафию Официально Началась!",
         description=(
-            f"👥 Всего участников: **{len(participants)}**\n"
-            f"📨 Роли успешно разосланы участникам в личные сообщения.\n"
-            f"Приятной игры!"
+            f"👥 Участников: **{len(participants)}**\n"
+            f"🌙 Начинается ночь...\n"
+            f"📨 Роли разосланы в личные сообщения."
         ),
-        color=0x2ecc71,
-        timestamp=datetime.now(MSK)
+        color=0x2ecc71
     )
-    await game.channel.send(embed=embed)
-    await send_log(game.channel.guild, "🎮 Началась Мафия", f"Игра в мафию запущена в канале {game.channel.mention} с {len(participants)} участниками.", color=0x2ecc71)
+    await interaction.channel.send(embed=embed)
+    await send_log(interaction.guild, "🎮 Началась Мафия", f"Игра в мафию запущена с {len(participants)} участниками.", color=0x2ecc71)
 
-# Привязываем метод к боту при инициализации
-commands.Bot.start_mafia_match = start_mafia_match
+    # Запускаем первую ночь
+    await game.start_night()
 
-@app_commands.command(name="mafia", description="🕶️ Запустить новую игру в Мафию (регистрация 3 минуты)")
-async def mafia_cmd(interaction: discord.Interaction):
-    if not is_high_staff(interaction.user):
-        await interaction.response.send_message("❌ Запускать игру могут только модераторы и руководство.", ephemeral=True)
+class MafiaRegistrationView(discord.ui.View):
+    def __init__(self, game: MafiaGame):
+        super().__init__(timeout=90)
+        self.game = game
+        self.is_active = True
+
+    @discord.ui.button(label="Участвовать в Мафии 🕶️", style=discord.ButtonStyle.primary)
+    async def join_mafia(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user in self.game.participants:
+            await interaction.response.send_message("⚠️ Вы уже зарегистрированы!", ephemeral=True)
+            return
+        if len(self.game.participants) >= 30:
+            await interaction.response.send_message("❌ Достигнут лимит участников (30).", ephemeral=True)
+            return
+        self.game.participants.append(interaction.user)
+        await interaction.response.send_message(f"✅ {interaction.user.mention} зарегистрировался!", ephemeral=True)
+
+    async def on_timeout(self):
+        self.is_active = False
+        for child in self.children:
+            child.disabled = True
+        try:
+            await self.game.message.edit(view=self)
+        except:
+            pass
+
+@app_commands.command(name="mafia_config", description="⚙️ Настроить количество ролей в Мафии (только для Основателей)")
+@app_commands.describe(mafia="Количество мафий", doctor="Количество докторов", detective="Количество детективов", barman="Количество барменов", harlot="Количество путан (соблазнительниц)")
+async def mafia_config(interaction: discord.Interaction, mafia: int = 1, doctor: int = 1, detective: int = 0, barman: int = 0, harlot: int = 0):
+    if not is_creator_or_founder(interaction.user):
+        await interaction.response.send_message("❌ Доступно только Создателям и Основателям.", ephemeral=True)
+        return
+    if mafia < 1:
+        await interaction.response.send_message("❌ Мафий должно быть минимум 1.", ephemeral=True)
         return
     
-    game = MafiaGame(interaction.client, interaction.channel, interaction.user)
-    view = MafiaRegistrationView(game)
+    mafia_configs[interaction.guild_id] = {"mafia": mafia, "doctor": doctor, "detective": detective, "barman": barman, "harlot": harlot}
+    await interaction.response.send_message(f"✅ Настройки мафии для сервера обновлены!\n`Мафия: {mafia}, Доктор: {doctor}, Детектив: {detective}, Бармен: {barman}, Путана: {harlot}`", ephemeral=True)
+
+# ==================== КОМАНДА ГОЛОСОВАНИЯ ====================
+@commands.command(name="голос")
+async def vote(ctx, member: discord.Member):
+    game = ctx.bot.mafia_game if hasattr(ctx.bot, 'mafia_game') else None
+    if not game or game.game_over or game.night_phase:
+        return
+    if member == ctx.author:
+        await ctx.send("❌ Нельзя голосовать за себя!", delete_after=5)
+        return
+    if member not in game.alive:
+        await ctx.send("❌ Этот игрок уже мёртв!", delete_after=5)
+        return
     
-    embed = discord.Embed(
-        title="🕶️ Регистрация на игру в Мафию",
-        description=(
-            f"Игру создал: {interaction.user.mention}\n"
-            f"⏱️ Время регистрации: **180 секунд (3 минуты)**\n"
-            f"👥 Зарегистрировано: **0 / 30**\n\n"
-            f"⚠️ **Внимание:** Для участия у вас должны быть **открыты личные сообщения**[cite: 12] (бот выдает роли туда)."
-        ),
-        color=0x7864c8,
-        timestamp=datetime.now(MSK)
-    )
-    embed.set_footer(text="Kingdom of Joy | Mafia System")
+    # Проверяем, голосовал ли уже
+    if ctx.author.id in game.votes:
+        await ctx.send("❌ Вы уже проголосовали!", delete_after=5)
+        return
     
-    await interaction.response.send_message(embed=embed, view=view)
-    msg = await interaction.original_response()
-    game.message = msg
-    
-    # Запускаем фоновый таймер с регулярным обновлением каждые 3 секунды
-    game.timer_task = asyncio.create_task(mafia_timer_loop(interaction.client, game))
+    if member.id not in game.votes:
+        game.votes[member.id] = []
+    game.votes[member.id].append(ctx.author.id)
+    await ctx.send(f"✅ Ваш голос учтен за {member.mention}!")
 
 # ==================== ОСТАЛЬНЫЕ СЛЭШ-КОМАНДЫ ====================
 @app_commands.command(name="lk", description="📊 Показать личный кабинет (свой или другого игрока)")
@@ -1985,11 +2262,12 @@ class KingdomBot(commands.Bot):
         intents = discord.Intents.all()
         super().__init__(command_prefix="!", intents=intents)
         self.user_level_cache = {}
+        self.mafia_game = None # Добавили переменную для хранения игры мафии
 
     async def setup_hook(self):
         commands_list = [
             marriage_propose, marriage_divorce, marriage_profile, set_dr, get_dr,
-            mafia_cmd, lk, bind, chance, sync_cmd, test_welcome, remind, badwords,
+            mafia_cmd, mafia_config, lk, bind, chance, sync_cmd, test_welcome, remind, badwords,
             warnlist, give_temp_role, warn, unwarn, mute, unmute, ban, unban,
             delete, staff, setup_support, setup_applications, messages, top,
             setmessages, addmessages, resetmessages, send_cmd, addgroup,
@@ -2095,7 +2373,6 @@ async def reminders_loop():
 async def before_reminders():
     await bot.wait_until_ready()
 
-# ==================== ИСПРАВЛЕННЫЙ БЛОК ЗАПУСКА ====================
 async def main():
     async with bot:
         reminders_loop.start()
