@@ -22,7 +22,6 @@ VERIFY_CHANNEL_ID = 1529538303559205047
 VERIFY_ROLE_ID = 1505240271200456864
 UNVERIFIED_ROLE_ID = 1529537943663018045
 VERIFY_MSG_FILE = "verify_msg.json"
-MONITORING_MSG_FILE = "monitoring_msg.json"
 APPLICATIONS_CHANNEL_ID = 1530237443767533748
 ROLE_MAPPER = 1525487051544203395
 ROLE_MODERATOR = 1505275521825771520
@@ -47,6 +46,7 @@ IMMUNE_ROLE_IDS = [CREATOR_ROLE_ID, FOUNDER_ROLE_ID]
 LOGS_CHANNEL_ID = 1505274763096883230
 SUPPORT_CHANNEL_ID = 1526688069464625305
 MEDIA_CHANNEL_ID = 1505266075347193976
+COMMUNICATION_CHANNEL_ID = 1505239843486306374
 WELCOME_CHANNEL_ID = 1505280068656824400
 EXCLUDED_LOG_CHANNEL = 1505543466426437712
 BALKAN_TRIGGERS = ['БАЛКАН', 'балкан', 'balkan', 'BALKAN', 'Balkan', 'Балкан']
@@ -135,7 +135,7 @@ def save_json(filepath, data):
     except Exception as e:
         print(f"❌ Ошибка сохранения {filepath}: {e}")
 
-# ==================== СЧЁТЧИКИ СООБЩЕНИЙ, БРАКОВ И ДНЕЙ РОЖДЕНИЯ ====================
+# ==================== СЧЁТЧИКИ СООБЩЕНИЙ, БРАКОВ И ДНИ РОЖДЕНИЯ ====================
 def load_message_counts():
     return load_json(MESSAGE_COUNTS_FILE, {})
 
@@ -414,7 +414,7 @@ class MarriageProposalView(discord.ui.View):
         self.stop()
         await interaction.response.edit_message(content=make_blockquote(f"💔 {self.target.mention} отклонил(а) предложение руки и сердца от {self.author.mention}."), embed=None, view=None)
 
-# ==================== СЛЭШ-КОМАНДЫ БРАКОВ ====================
+# ==================== СЛЭШ-КОМАНДЫ БРАКОВ И ДНЕЙ РОЖДЕНИЯ ====================
 @app_commands.command(name="брак", description="💍 Сделать предложение руки и сердца игроку")
 @app_commands.describe(user="Пользователь, которому вы предлагаете брак")
 async def marriage_propose(interaction: discord.Interaction, user: discord.Member):
@@ -486,129 +486,70 @@ async def marriage_profile(interaction: discord.Interaction, user: discord.Membe
     embed.set_footer(text="Kingdom of Joy | Браки", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
     await interaction.response.send_message(embed=embed)
 
-@app_commands.command(name="все_браки", description="📜 Посмотреть список всех заключённых браков")
-async def all_marriages(interaction: discord.Interaction):
-    marriages = load_marriages()
-    if not marriages:
-        await interaction.response.send_message(make_blockquote("💔 На сервере пока нет ни одного брака."), ephemeral=True)
+@app_commands.command(name="setdr", description="🎂 Установить дату своего рождения (ДД.ММ)")
+@app_commands.describe(date="Дата рождения в формате ДД.ММ (например, 15.08)")
+async def set_dr(interaction: discord.Interaction, date: str):
+    if not re.match(r"^\d{2}\.\d{2}$", date):
+        await interaction.response.send_message("❌ Неверный формат! Используйте формат `ДД.ММ` (например, `15.08`).", ephemeral=True)
         return
-
-    processed_pairs = set()
-    lines = []
-    for uid, info in marriages.items():
-        partner_id = info["partner"]
-        pair = tuple(sorted([int(uid), int(partner_id)]))
-        if pair in processed_pairs:
-            continue
-        processed_pairs.add(pair)
-        date_str = f"<t:{info['date']}:D>"
-        lines.append(f"💍 <@{pair[0]}> 💕 <@{pair[1]}> — дата: {date_str}")
-
-    embed = discord.Embed(
-        title="📜 Список всех браков Kingdom of Joy",
-        description="\n".join(lines) if lines else "Нет активных браков.",
-        color=0xff69b4,
-        timestamp=datetime.now(MSK)
-    )
-    embed.set_footer(text="Kingdom of Joy | Браки", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
-    await interaction.response.send_message(embed=embed)
-
-# ==================== СЛЭШ-КОМАНДЫ ДНЕЙ РОЖДЕНИЯ ====================
-@app_commands.command(name="установить_др", description="🎂 Установить дату своего дня рождения")
-@app_commands.describe(day="День рождения (1-31)", month="Месяц (1-12)", year="Год рождения (необязательно)")
-async def set_birthday(interaction: discord.Interaction, day: int, month: int, year: int = None):
-    if day < 1 or day > 31 or month < 1 or month > 12:
-        await interaction.response.send_message("❌ Укажите корректный день (1-31) и месяц (1-12)!", ephemeral=True)
-        return
-
-    try:
-        dummy_year = year if year else 2000
-        datetime(dummy_year, month, day)
-    except ValueError:
-        await interaction.response.send_message("❌ Указана несуществующая дата!", ephemeral=True)
-        return
-
     birthdays = load_birthdays()
-    birthdays[str(interaction.user.id)] = {
-        "day": day,
-        "month": month,
-        "year": year,
-        "last_congratulated": 0
-    }
+    birthdays[str(interaction.user.id)] = date
     save_birthdays(birthdays)
+    await interaction.response.send_message(make_blockquote(f"🎂 Дата рождения успешно установлена на `{date}`!"), ephemeral=True)
 
-    date_str = f"{day:02d}.{month:02d}" + (f".{year}" if year else "")
-    await interaction.response.send_message(
-        make_blockquote(f"🎉 **Ваш день рождения успешно сохранён:** `{date_str}`!\nБот обязательно искренне поздравит вас в ваш праздник! 🎂"),
-        ephemeral=True
-    )
-
-@app_commands.command(name="др", description="🎉 Посмотреть сколько времени осталось до дня рождения")
+@app_commands.command(name="др", description="🎂 Посмотреть дату рождения игрока")
 @app_commands.describe(user="Пользователь (оставьте пустым для себя)")
-async def check_birthday(interaction: discord.Interaction, user: discord.Member = None):
+async def get_dr(interaction: discord.Interaction, user: discord.Member = None):
     target = user or interaction.user
     birthdays = load_birthdays()
-    uid = str(target.id)
-
-    if uid not in birthdays:
-        msg = f"❌ {target.mention} ещё не указал(а) свой день рождения!\nУстановите его командой `/установить_др`."
-        await interaction.response.send_message(make_blockquote(msg), ephemeral=True)
+    bdate = birthdays.get(str(target.id))
+    if not bdate:
+        await interaction.response.send_message(make_blockquote(f"🎂 У пользователя {target.mention} не указана дата рождения."), ephemeral=True)
         return
+    await interaction.response.send_message(make_blockquote(f"🎂 День рождения {target.mention}: **{bdate}**"))
 
-    b_info = birthdays[uid]
-    day = b_info["day"]
-    month = b_info["month"]
-    year = b_info.get("year")
+# ==================== СИСТЕМА МАФИИ ====================
+class MafiaGame:
+    def __init__(self, bot, channel: discord.TextChannel, starter: discord.Member):
+        self.bot = bot
+        self.channel = channel
+        self.starter = starter
+        self.participants = [starter]
+        self.is_running = False
+        self.registration_active = True
+        self.time_left = 180  # 3 minutes
+        self.timer_task = None
+        self.thread = None
+        self.players_roles = {}  # {member_id: role_name}
+        self.alive_players = set()
+        self.dead_players = set()
 
-    now = datetime.now(MSK)
-    target_year = now.year
+class MafiaRegistrationView(discord.ui.View):
+    def __init__(self, game: MafiaGame):
+        super().__init__(timeout=None)
+        self.game = game
 
-    try:
-        bday_this_year = datetime(target_year, month, day, 0, 0, 0, tzinfo=MSK)
-    except ValueError:
-        bday_this_year = datetime(target_year, 3, 1, 0, 0, 0, tzinfo=MSK)
+    @discord.ui.button(label="Участвовать в Мафии 🕶️", style=discord.ButtonStyle.primary, custom_id="mafia_join_btn")
+    async def join_mafia(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.game.registration_active:
+            await interaction.response.send_message("❌ Регистрация на игру уже завершена!", ephemeral=True)
+            return
+        if interaction.user in self.game.participants:
+            await interaction.response.send_message("⚠️ Вы уже зарегистрированы на игру!", ephemeral=True)
+            return
+        if len(self.game.participants) >= 30:
+            await interaction.response.send_message("❌ Достигнут ликс участников (30 человек).", ephemeral=True)
+            return
+        self.game.participants.append(interaction.user)
+        await interaction.response.send_message(f"✅ {interaction.user.mention} успешно зарегистрировался на игру в Мафию!", ephemeral=True)
 
-    if now.day == day and now.month == month:
-        embed = discord.Embed(
-            title="🎉 🎂 СЕГОДНЯ ДЕНЬ РОЖДЕНИЯ! 🎂 🎉",
-            description=f"🥳 Сегодня свой День Рождения отмечает {target.mention}!\nПоздравляем и желаем всего самого наилучшего! ❤️✨",
-            color=0xffd700,
-            timestamp=now
-        )
-        embed.set_thumbnail(url=target.display_avatar.url)
-        await interaction.response.send_message(embed=embed)
-        return
-
-    if now > bday_this_year:
-        target_year += 1
-        try:
-            next_bday = datetime(target_year, month, day, 0, 0, 0, tzinfo=MSK)
-        except ValueError:
-            next_bday = datetime(target_year, 3, 1, 0, 0, 0, tzinfo=MSK)
-    else:
-        next_bday = bday_this_year
-
-    diff = next_bday - now
-    days_left = diff.days
-    hours_left, remainder = divmod(diff.seconds, 3600)
-    minutes_left, seconds_left = divmod(remainder, 60)
-
-    bday_format = f"{day:02d}.{month:02d}" + (f".{year}" if year else "")
-
-    embed = discord.Embed(
-        title=f"🎂 День Рождения — {target.display_name}",
-        color=0x7864c8,
-        timestamp=now
-    )
-    embed.add_field(name="📅 Дата ДР", value=f"`{bday_format}`", inline=True)
-    embed.add_field(
-        name="⏳ Осталось времени",
-        value=f"**{days_left}** дн. **{hours_left:02d}** ч. **{minutes_left:02d}** мин. **{seconds_left:02d}** сек.",
-        inline=False
-    )
-    embed.set_thumbnail(url=target.display_avatar.url)
-    embed.set_footer(text="Kingdom of Joy | Дни Рождения", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
-    await interaction.response.send_message(embed=embed)
+    @discord.ui.button(label="Добавить +30 секунд ⏱️", style=discord.ButtonStyle.secondary, custom_id="mafia_add_time_btn")
+    async def add_time(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.game.registration_active:
+            await interaction.response.send_message("❌ Регистрация уже завершена.", ephemeral=True)
+            return
+        self.game.time_left += 30
+        await interaction.response.send_message(f"⏱️ Пользователь {interaction.user.mention} добавил 30 секунд к регистрации!", ephemeral=False)
 
 # ==================== ОСТАЛЬНЫЕ СЛЭШ-КОМАНДЫ ====================
 @app_commands.command(name="lk", description="📊 Показать личный кабинет (свой или другого игрока)")
@@ -1717,11 +1658,6 @@ class ApplicationSelect(discord.ui.Select):
         modal = ApplicationModal(self.values[0])
         await interaction.response.send_modal(modal)
 
-class ApplicationView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(ApplicationSelect())
-
 class ApplicationModal(discord.ui.Modal):
     def __init__(self, app_type: str):
         super().__init__(title=f"📝 Заявка: {app_type[:20]}")
@@ -1814,7 +1750,6 @@ class ApplicationVerdictView(discord.ui.View):
         self.applicant_id = applicant_id
         self.role_id = role_id
         self.app_type = app_type
-
     @discord.ui.button(label="✅ Принять", style=discord.ButtonStyle.success, custom_id="app_accept")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
@@ -1822,277 +1757,33 @@ class ApplicationVerdictView(discord.ui.View):
             return
         guild = interaction.guild
         member = guild.get_member(self.applicant_id)
-        if member:
-            role = guild.get_role(self.role_id)
-            if role and role not in member.roles:
-                await member.add_roles(role)
-            try:
-                await member.send(f"🎉 Ваша заявка на должность **{self.app_type}** была **ОДОБРЕНА**!")
-            except Exception:
-                pass
-        await interaction.response.send_message(f"✅ Заявка пользователя <@{self.applicant_id}> была одобрена {interaction.user.mention}.")
-        await interaction.channel.send(make_blockquote(f"🟢 **Заявка одобрена!** Роль выдана <@{self.applicant_id}>."))
-        await send_log(guild, "🟢 Заявка Одобрена", f"Заявка <@{self.applicant_id}> на {self.app_type} одобрена {interaction.user.mention}.", color=0x2ecc71)
-
-    @discord.ui.button(label="❌ Отклонить", style=discord.ButtonStyle.danger, custom_id="app_reject")
+        if not member:
+            await interaction.response.send_message("❌ Пользователь не найден на сервере.", ephemeral=True)
+            return
+        role = guild.get_role(self.role_id)
+        if not role:
+            await interaction.response.send_message("❌ Роль для выдачи не найдена.", ephemeral=True)
+            return
+        try:
+            await member.add_roles(role)
+            await interaction.response.send_message(f"✅ Заявка принята! Пользователю {member.mention} выдана роль {role.mention}.")
+            await send_log(guild, "✅ Заявка принята", f"Пользователь {member.mention} получил роль {role.mention} (заявка на {self.app_type})", color=0x2ecc71)
+            await interaction.channel.edit(locked=True, archived=True)
+            await interaction.channel.send(f"🎉 Заявка принята! {member.mention}, поздравляем!")
+            await interaction.message.edit(view=None)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
+    @discord.ui.button(label="❌ Отказать", style=discord.ButtonStyle.danger, custom_id="app_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
             await interaction.response.send_message("❌ У вас нет прав для отклонения заявок.", ephemeral=True)
             return
-        guild = interaction.guild
-        member = guild.get_member(self.applicant_id)
-        if member:
-            try:
-                await member.send(f"❌ Ваша заявка на должность **{self.app_type}** была **ОТКЛОНЕНА**.")
-            except Exception:
-                pass
-        await interaction.response.send_message(f"❌ Заявка пользователя <@{self.applicant_id}> была отклонена {interaction.user.mention}.")
-        await interaction.channel.send(make_blockquote(f"🔴 **Заявка отклонена.**"))
-        await send_log(guild, "🔴 Заявка Отклонена", f"Заявка <@{self.applicant_id}> на {self.app_type} отклонена {interaction.user.mention}.", color=0xe74c3c)
+        await interaction.response.send_message("❌ Заявка отклонена.")
+        await send_log(interaction.guild, "❌ Заявка отклонена", f"Заявка пользователя с ID {self.applicant_id} была отклонена.", color=0xe74c3c)
+        await interaction.channel.edit(locked=True, archived=True)
+        await interaction.message.edit(view=None)
 
-# ==================== ВЕРИФИКАЦИЯ ====================
-class VerifyView(discord.ui.View):
+class ApplicationView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-
-    @discord.ui.button(label="Пройти верификацию", style=discord.ButtonStyle.success, emoji="✅", custom_id="verify_btn")
-    async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        guild = interaction.guild
-        unverified_role = guild.get_role(UNVERIFIED_ROLE_ID)
-        verify_role = guild.get_role(VERIFY_ROLE_ID)
-
-        if verify_role and verify_role in interaction.user.roles:
-            await interaction.response.send_message("❌ Вы уже прошли верификацию!", ephemeral=True)
-            return
-
-        if unverified_role and unverified_role in interaction.user.roles:
-            await interaction.user.remove_roles(unverified_role)
-        if verify_role:
-            await interaction.user.add_roles(verify_role)
-
-        role_1 = guild.get_role(ROLE_1)
-        if role_1 and role_1 not in interaction.user.roles:
-            await interaction.user.add_roles(role_1)
-
-        await interaction.response.send_message("✅ Вы успешно прошли верификацию и получили доступ к серверу!", ephemeral=True)
-        await send_log(guild, "✅ Верификация", f"Пользователь {interaction.user.mention} успешно прошёл верификацию.", color=0x2ecc71)
-
-# ==================== КЛАСС БОТА ====================
-class KingdomBot(commands.Bot):
-    def __init__(self):
-        intents = discord.Intents.all()
-        super().__init__(command_prefix="!", intents=intents)
-        self.user_level_cache = {}
-
-    async def setup_hook(self):
-        self.add_view(SupportHubView())
-        self.add_view(TicketCloseView())
-        self.add_view(IdeaVotingView())
-        self.add_view(ApplicationView())
-        self.add_view(VerifyView())
-        auto_update_online_monitoring.start()
-        check_reminders_task.start()
-        check_birthdays_task.start()
-
-    async def find_player_by_discord(self, discord_id: str, users_data: dict):
-        for uuid, data in users_data.get("players", {}).items():
-            if str(data.get("discord-id")) == str(discord_id):
-                return uuid, data
-        return None
-
-    async def find_player_by_id(self, player_id: int, users_data: dict):
-        for uuid, data in users_data.get("players", {}).items():
-            if data.get("player-id") == player_id:
-                return uuid, data
-        return None
-
-    async def find_player_by_nick(self, nick: str, users_data: dict):
-        target_uuid = await get_uuid_by_name(nick)
-        if target_uuid:
-            uuid_clean = target_uuid.replace("-", "")
-            if uuid_clean in users_data.get("players", {}):
-                return uuid_clean, users_data["players"][uuid_clean]
-        for uuid, data in users_data.get("players", {}).items():
-            if data.get("name", "").lower() == nick.lower():
-                return uuid, data
-        return None
-
-    def get_group_prefix(self, group_name: str, users_data: dict) -> str:
-        return users_data.get("group-prefixes", {}).get(group_name, "")
-
-bot = KingdomBot()
-
-# ==================== АВТООБНОВЛЕНИЕ ОНЛАЙНА И ТАСКИ ====================
-@tasks.loop(minutes=3)
-async def auto_update_online_monitoring():
-    await bot.wait_until_ready()
-    try:
-        users_data = await get_users_yml_sftp()
-        total_players = len(users_data.get("players", {})) if users_data and "players" in users_data else 0
-
-        embed = discord.Embed(
-            title="📊 МОНИТОРИНГ И СТАТИСТИКА KINGDOM OF JOY",
-            description=(
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🟢 **Статус Сервера:** `Онлайн`\n"
-                f"👥 **Всего Игроков в базе:** `{total_players}`\n"
-                f"⏰ **Обновлено:** <t:{int(datetime.now(MSK).timestamp())}:R>\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            ),
-            color=0x2ecc71,
-            timestamp=datetime.now(MSK)
-        )
-        embed.set_footer(text="Автообновление каждые 3 минуты")
-
-        data = load_json(MONITORING_MSG_FILE, {})
-        channel_id = data.get("channel_id", BOT_CHANNEL)
-        msg_id = data.get("message_id")
-
-        channel = bot.get_channel(channel_id)
-        if not channel:
-            try:
-                channel = await bot.fetch_channel(channel_id)
-            except Exception:
-                return
-
-        if channel:
-            if msg_id:
-                try:
-                    msg = await channel.fetch_message(msg_id)
-                    await msg.edit(embed=embed)
-                    return
-                except Exception:
-                    pass
-            msg = await channel.send(embed=embed)
-            save_json(MONITORING_MSG_FILE, {"channel_id": channel.id, "message_id": msg.id})
-    except Exception as e:
-        print(f"❌ Ошибка автообновления онлайна: {e}")
-
-@tasks.loop(seconds=30)
-async def check_reminders_task():
-    await bot.wait_until_ready()
-    reminders = load_json(REMINDERS_FILE, [])
-    now_ts = int(datetime.now(MSK).timestamp())
-    updated = []
-    for r in reminders:
-        if now_ts >= r["unix"]:
-            channel = bot.get_channel(r["channel_id"])
-            if channel:
-                try:
-                    await channel.send(f"⏰ <@{r['user_id']}> **Напоминание:** {r['text']}")
-                except Exception:
-                    pass
-        else:
-            updated.append(r)
-    if len(updated) != len(reminders):
-        save_json(REMINDERS_FILE, updated)
-
-@tasks.loop(hours=1)
-async def check_birthdays_task():
-    await bot.wait_until_ready()
-    now = datetime.now(MSK)
-    birthdays = load_birthdays()
-    updated = False
-    for uid, info in birthdays.items():
-        if info["day"] == now.day and info["month"] == now.month:
-            last_cong = info.get("last_congratulated", 0)
-            if last_cong != now.year:
-                channel = bot.get_channel(WELCOME_CHANNEL_ID) or bot.get_channel(BOT_CHANNEL)
-                if channel:
-                    try:
-                        embed = discord.Embed(
-                            title="🎉 🎂 С ДНЁМ РОЖДЕНИЯ! 🎂 🎉",
-                            description=f"🥳 Сегодня свой День Рождения отмечает <@{uid}>!\nЖелаем счастья, успехов и отличного настроения! ❤️✨",
-                            color=0xffd700,
-                            timestamp=now
-                        )
-                        await channel.send(content=f"🎉 <@{uid}>", embed=embed)
-                        info["last_congratulated"] = now.year
-                        updated = True
-                    except Exception:
-                        pass
-    if updated:
-        save_birthdays(birthdays)
-
-# ==================== ЭВЕНТЫ ====================
-@bot.event
-async def on_ready():
-    print(f"✅ Бот {bot.user} (ID: {bot.user.id}) успешно запущен и готов к работе!")
-    counts = load_message_counts()
-    for uid, count in counts.items():
-        bot.user_level_cache[int(uid)] = get_level(count)
-
-@bot.event
-async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    # БЛОКИРОВКА РЕАКЦИЙ НА СООБЩЕНИЯ БОТА
-    if payload.user_id == bot.user.id:
-        return
-    channel = bot.get_channel(payload.channel_id)
-    if not channel:
-        try:
-            channel = await bot.fetch_channel(payload.channel_id)
-        except Exception:
-            return
-    try:
-        message = await channel.fetch_message(payload.message_id)
-        if message.author.id == bot.user.id:
-            user = bot.get_user(payload.user_id) or await bot.fetch_user(payload.user_id)
-            if user and not user.bot:
-                await message.remove_reaction(payload.emoji, user)
-    except Exception:
-        pass
-
-@bot.event
-async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
-
-    # Фильтр слов
-    badwords_data = load_json(BADWORDS_FILE, {"words": [], "mute_time": "1h"})
-    words_list = badwords_data.get("words", [])
-    content_lower = message.content.lower()
-
-    if words_list and any(w in content_lower for w in words_list):
-        if not is_high_staff(message.author):
-            try:
-                await message.delete()
-                duration = parse_duration(badwords_data.get("mute_time", "1h"))
-                await message.author.timeout(duration, reason="Фильтр запрещённых слов")
-                await message.channel.send(make_blockquote(f"🔇 {message.author.mention} отправлен в мут за использование запрещённых слов."), delete_after=10)
-                await send_log(message.guild, "🔇 Авто-Мут (Фильтр Слов)", f"Пользователь {message.author.mention} использовал запрещённое слово в канале {message.channel.mention}.", color=0xe74c3c)
-                return
-            except Exception as e:
-                print(f"Ошибка применения фильтра слов: {e}")
-
-    # Триггеры
-    if any(tr in content_lower for tr in BALKAN_TRIGGERS):
-        try:
-            for emoji in CUSTOM_REACTIONS:
-                await message.add_reaction(emoji)
-        except Exception:
-            pass
-
-    if any(tr in content_lower for tr in SPECIAL_TRIGGERS):
-        try:
-            await message.add_reaction(CROWN_EMOJI)
-        except Exception:
-            pass
-
-    # Счётчик сообщений и уровень
-    if message.channel.id in COUNT_CHANNELS:
-        counts = load_message_counts()
-        uid = str(message.author.id)
-        current_count = counts.get(uid, 0) + 1
-        counts[uid] = current_count
-        save_message_counts(counts)
-
-        if message.author.id not in bot.user_level_cache:
-            bot.user_level_cache[message.author.id] = get_level(current_count - 1)
-
-        await update_user_level(bot, message.author, current_count, message.channel)
-
-    await bot.process_commands(message)
-
-# ==================== ЗАПУСК ====================
-if __name__ == "__main__":
-    bot.run(TOKEN)
+        self.add_item(ApplicationSelect())
