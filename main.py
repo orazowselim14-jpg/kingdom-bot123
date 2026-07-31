@@ -22,6 +22,7 @@ VERIFY_CHANNEL_ID = 1529538303559205047
 VERIFY_ROLE_ID = 1505240271200456864
 UNVERIFIED_ROLE_ID = 1529537943663018045
 VERIFY_MSG_FILE = "verify_msg.json"
+MONITORING_MSG_FILE = "monitoring_msg.json"
 APPLICATIONS_CHANNEL_ID = 1530237443767533748
 ROLE_MAPPER = 1525487051544203395
 ROLE_MODERATOR = 1505275521825771520
@@ -1716,6 +1717,11 @@ class ApplicationSelect(discord.ui.Select):
         modal = ApplicationModal(self.values[0])
         await interaction.response.send_modal(modal)
 
+class ApplicationView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ApplicationSelect())
+
 class ApplicationModal(discord.ui.Modal):
     def __init__(self, app_type: str):
         super().__init__(title=f"📝 Заявка: {app_type[:20]}")
@@ -1808,6 +1814,7 @@ class ApplicationVerdictView(discord.ui.View):
         self.applicant_id = applicant_id
         self.role_id = role_id
         self.app_type = app_type
+
     @discord.ui.button(label="✅ Принять", style=discord.ButtonStyle.success, custom_id="app_accept")
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
@@ -1815,313 +1822,277 @@ class ApplicationVerdictView(discord.ui.View):
             return
         guild = interaction.guild
         member = guild.get_member(self.applicant_id)
-        if not member:
-            await interaction.response.send_message("❌ Пользователь не найден на сервере.", ephemeral=True)
-            return
-        role = guild.get_role(self.role_id)
-        if not role:
-            await interaction.response.send_message("❌ Роль для выдачи не найдена.", ephemeral=True)
-            return
-        try:
-            await member.add_roles(role)
-            await interaction.response.send_message(f"✅ Заявка принята! Пользователю {member.mention} выдана роль {role.mention}.")
-            await send_log(guild, "✅ Заявка принята", f"Пользователь {member.mention} получил роль {role.mention} (заявка на {self.app_type})", color=0x2ecc71)
-            await interaction.channel.edit(locked=True, archived=True)
-            await interaction.channel.send(f"🎉 Заявка принята! {member.mention}, поздравляем!")
-            await interaction.message.edit(view=None)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
-    @discord.ui.button(label="❌ Отказать", style=discord.ButtonStyle.danger, custom_id="app_reject")
+        if member:
+            role = guild.get_role(self.role_id)
+            if role and role not in member.roles:
+                await member.add_roles(role)
+            try:
+                await member.send(f"🎉 Ваша заявка на должность **{self.app_type}** была **ОДОБРЕНА**!")
+            except Exception:
+                pass
+        await interaction.response.send_message(f"✅ Заявка пользователя <@{self.applicant_id}> была одобрена {interaction.user.mention}.")
+        await interaction.channel.send(make_blockquote(f"🟢 **Заявка одобрена!** Роль выдана <@{self.applicant_id}>."))
+        await send_log(guild, "🟢 Заявка Одобрена", f"Заявка <@{self.applicant_id}> на {self.app_type} одобрена {interaction.user.mention}.", color=0x2ecc71)
+
+    @discord.ui.button(label="❌ Отклонить", style=discord.ButtonStyle.danger, custom_id="app_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
             await interaction.response.send_message("❌ У вас нет прав для отклонения заявок.", ephemeral=True)
             return
-        await interaction.response.send_message("❌ Заявка отклонена. Ветка будет заархивирована.")
-        await interaction.channel.send("🔴 **Заявка отклонена.** Спасибо за проявленный интерес.")
-        await interaction.channel.edit(locked=True, archived=True)
-        await interaction.message.edit(view=None)
-        await send_log(interaction.guild, "❌ Заявка отклонена", f"Заявка на {self.app_type} от пользователя <@{self.applicant_id}> отклонена.", color=0xe74c3c)
+        guild = interaction.guild
+        member = guild.get_member(self.applicant_id)
+        if member:
+            try:
+                await member.send(f"❌ Ваша заявка на должность **{self.app_type}** была **ОТКЛОНЕНА**.")
+            except Exception:
+                pass
+        await interaction.response.send_message(f"❌ Заявка пользователя <@{self.applicant_id}> была отклонена {interaction.user.mention}.")
+        await interaction.channel.send(make_blockquote(f"🔴 **Заявка отклонена.**"))
+        await send_log(guild, "🔴 Заявка Отклонена", f"Заявка <@{self.applicant_id}> на {self.app_type} отклонена {interaction.user.mention}.", color=0xe74c3c)
 
-class ApplicationView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(ApplicationSelect())
-
+# ==================== ВЕРИФИКАЦИЯ ====================
 class VerifyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-    @discord.ui.button(label="✅ Верифицироваться", style=discord.ButtonStyle.success, custom_id="verify_btn")
+
+    @discord.ui.button(label="Пройти верификацию", style=discord.ButtonStyle.success, emoji="✅", custom_id="verify_btn")
     async def verify(self, interaction: discord.Interaction, button: discord.ui.Button):
-        unverified_role = interaction.guild.get_role(UNVERIFIED_ROLE_ID)
-        verified_role = interaction.guild.get_role(VERIFY_ROLE_ID)
-        role_1 = interaction.guild.get_role(ROLE_1)
-        if not unverified_role or not verified_role or not role_1:
-            await interaction.response.send_message("❌ Ошибка конфигурации ролей. Обратитесь к администрации.", ephemeral=True)
-            return
-        if verified_role in interaction.user.roles:
-            await interaction.response.send_message("✅ Вы уже верифицированы!", ephemeral=True)
+        guild = interaction.guild
+        unverified_role = guild.get_role(UNVERIFIED_ROLE_ID)
+        verify_role = guild.get_role(VERIFY_ROLE_ID)
+
+        if verify_role and verify_role in interaction.user.roles:
+            await interaction.response.send_message("❌ Вы уже прошли верификацию!", ephemeral=True)
             return
 
-        try:
-            if unverified_role in interaction.user.roles:
-                await interaction.user.remove_roles(unverified_role)
-            await interaction.user.add_roles(verified_role, role_1)
-            interaction.client.user_level_cache[interaction.user.id] = 1
-            await interaction.response.send_message(f"✅ Поздравляю! Вы успешно верифицированы. Вам выдана роль {verified_role.mention} и роль 1 уровня.", ephemeral=True)
-            await send_log(interaction.guild, "✅ Верификация", f"Пользователь {interaction.user.mention} успешно верифицирован, выдана роль 1 уровня.", color=0x2ecc71)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Ошибка при верификации: {e}", ephemeral=True)
+        if unverified_role and unverified_role in interaction.user.roles:
+            await interaction.user.remove_roles(unverified_role)
+        if verify_role:
+            await interaction.user.add_roles(verify_role)
+
+        role_1 = guild.get_role(ROLE_1)
+        if role_1 and role_1 not in interaction.user.roles:
+            await interaction.user.add_roles(role_1)
+
+        await interaction.response.send_message("✅ Вы успешно прошли верификацию и получили доступ к серверу!", ephemeral=True)
+        await send_log(guild, "✅ Верификация", f"Пользователь {interaction.user.mention} успешно прошёл верификацию.", color=0x2ecc71)
 
 # ==================== КЛАСС БОТА ====================
 class KingdomBot(commands.Bot):
     def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        intents.members = True
-        intents.guilds = True
-        intents.reactions = True
-        allowed_mentions = discord.AllowedMentions(roles=True, users=True, everyone=False)
-        super().__init__(command_prefix="!", intents=intents, allowed_mentions=allowed_mentions)
-        self.reacted_messages = set()
-        self.user_badword_counts = {}
+        intents = discord.Intents.all()
+        super().__init__(command_prefix="!", intents=intents)
         self.user_level_cache = {}
 
-    async def find_player_by_discord(self, discord_id: str, users_data: dict):
-        if not users_data or "players" not in users_data:
-            return None
-        for uuid, pdata in users_data["players"].items():
-            if str(pdata.get("discord-id")) == discord_id:
-                return uuid, pdata
-        return None
+    async def setup_hook(self):
+        self.add_view(SupportHubView())
+        self.add_view(TicketCloseView())
+        self.add_view(IdeaVotingView())
+        self.add_view(ApplicationView())
+        self.add_view(VerifyView())
+        auto_update_online_monitoring.start()
+        check_reminders_task.start()
+        check_birthdays_task.start()
 
-    async def find_player_by_nick(self, nick: str, users_data: dict):
-        if not users_data or "players" not in users_data:
-            return None
-        uuid = await get_uuid_by_name(nick)
-        if uuid:
-            uuid_clean = uuid.replace("-", "")
-            if uuid_clean in users_data["players"]:
-                return uuid_clean, users_data["players"][uuid_clean]
-        for u, pdata in users_data["players"].items():
-            if pdata.get("name", "").lower() == nick.lower():
-                return u, pdata
+    async def find_player_by_discord(self, discord_id: str, users_data: dict):
+        for uuid, data in users_data.get("players", {}).items():
+            if str(data.get("discord-id")) == str(discord_id):
+                return uuid, data
         return None
 
     async def find_player_by_id(self, player_id: int, users_data: dict):
-        if not users_data or "players" not in users_data:
-            return None
-        for uuid, pdata in users_data["players"].items():
-            if pdata.get("player-id") == player_id:
-                return uuid, pdata
+        for uuid, data in users_data.get("players", {}).items():
+            if data.get("player-id") == player_id:
+                return uuid, data
+        return None
+
+    async def find_player_by_nick(self, nick: str, users_data: dict):
+        target_uuid = await get_uuid_by_name(nick)
+        if target_uuid:
+            uuid_clean = target_uuid.replace("-", "")
+            if uuid_clean in users_data.get("players", {}):
+                return uuid_clean, users_data["players"][uuid_clean]
+        for uuid, data in users_data.get("players", {}).items():
+            if data.get("name", "").lower() == nick.lower():
+                return uuid, data
         return None
 
     def get_group_prefix(self, group_name: str, users_data: dict) -> str:
-        groups = users_data.get("groups", {})
-        if group_name in groups:
-            return groups[group_name].get("prefix", "")
-        return ""
-
-    async def setup_hook(self):
-        # Основные команды
-        self.tree.add_command(lk)
-        self.tree.add_command(bind)
-        self.tree.add_command(chance)
-        self.tree.add_command(sync_cmd)
-        self.tree.add_command(test_welcome)
-        self.tree.add_command(remind)
-        self.tree.add_command(badwords)
-        self.tree.add_command(warnlist)
-        self.tree.add_command(give_temp_role)
-        self.tree.add_command(warn)
-        self.tree.add_command(unwarn)
-        self.tree.add_command(mute)
-        self.tree.add_command(unmute)
-        self.tree.add_command(ban)
-        self.tree.add_command(unban)
-        self.tree.add_command(delete)
-        self.tree.add_command(staff)
-        self.tree.add_command(setup_support)
-        self.tree.add_command(setup_applications)
-        self.tree.add_command(send_cmd)
-        self.tree.add_command(messages)
-        self.tree.add_command(top)
-        self.tree.add_command(setmessages)
-        self.tree.add_command(addmessages)
-        self.tree.add_command(resetmessages)
-
-        # Команды Браков
-        self.tree.add_command(marriage_propose)
-        self.tree.add_command(marriage_divorce)
-        self.tree.add_command(marriage_profile)
-        self.tree.add_command(all_marriages)
-
-        # Команды Дней Рождения
-        self.tree.add_command(set_birthday)
-        self.tree.add_command(check_birthday)
-
-        # Команды SFTP
-        self.tree.add_command(addgroup)
-        self.tree.add_command(removegroup)
-        self.tree.add_command(listgroups)
-        self.tree.add_command(setbalance)
-        self.tree.add_command(addbalance)
-        self.tree.add_command(takebalance)
-        self.tree.add_command(setrelic)
-        self.tree.add_command(addrelic)
-        self.tree.add_command(takerelic)
-        self.tree.add_command(resetplayer)
-
-        try:
-            from mc_status import StatusButtonsView
-            self.add_view(StatusButtonsView())
-        except Exception:
-            pass
-        self.add_view(SupportHubView())
-        self.add_view(ApplicationView())
-        self.add_view(VerifyView())
-
-        self.check_reminders.start()
-        self.check_birthdays.start()
-
-    @tasks.loop(minutes=1)
-    async def check_birthdays(self):
-        now = datetime.now(MSK)
-        birthdays = load_birthdays()
-        updated = False
-
-        for uid, b_info in birthdays.items():
-            day = b_info.get("day")
-            month = b_info.get("month")
-            last_year = b_info.get("last_congratulated", 0)
-
-            if now.day == day and now.month == month and last_year != now.year:
-                guild = self.guilds[0] if self.guilds else None
-                if guild:
-                    channel = guild.get_channel(1505239843486306374) or guild.get_channel(WELCOME_CHANNEL_ID)
-                    member = guild.get_member(int(uid))
-                    if channel and member:
-                        embed = discord.Embed(
-                            title="🎉✨ ИСКРЕННИЕ ПОЗДРАВЛЕНИЯ С ДНЁМ РОЖДЕНИЯ! ✨🎉",
-                            description=(
-                                f"💖 **Дорогой(ая) {member.mention}!**\n\n"
-                                f"От всего сердца и от всего нашего сообщества **Kingdom of Joy** поздравляем тебя с этим замечательным днем! 🎂🥳\n\n"
-                                f"✨ Желаем тебе неиссякаемой энергии, верных друзей, крепкого здоровья и воплощения всех самых грандиозных планов!\n"
-                                f"Пусть каждый день приносит только радость, улыбки и тепло. Спасибо, что ты с нами! 🌟❤️"
-                            ),
-                            color=0xffd700,
-                            timestamp=now
-                        )
-                        embed.set_thumbnail(url=member.display_avatar.url)
-                        embed.set_footer(text="Kingdom of Joy | День Рождения", icon_url=guild.icon.url if guild.icon else None)
-                        await channel.send(content=f"🥳 {member.mention}", embed=embed)
-                        b_info["last_congratulated"] = now.year
-                        updated = True
-
-        if updated:
-            save_birthdays(birthdays)
-
-    @check_birthdays.before_loop
-    async def before_check_birthdays(self):
-        await self.wait_until_ready()
-
-    @tasks.loop(seconds=15)
-    async def check_reminders(self):
-        now_ts = int(datetime.now(MSK).timestamp())
-        reminders = load_json(REMINDERS_FILE, [])
-        remaining = []
-        for r in reminders:
-            if r["unix"] <= now_ts:
-                channel = self.get_channel(r["channel_id"])
-                if channel:
-                    try:
-                        await channel.send(f"⏰ <@{r['user_id']}>, напоминание: **{r['text']}**")
-                    except Exception:
-                        pass
-            else:
-                remaining.append(r)
-        if len(remaining) != len(reminders):
-            save_json(REMINDERS_FILE, remaining)
-
-    @check_reminders.before_loop
-    async def before_check_reminders(self):
-        await self.wait_until_ready()
-
-    async def on_ready(self):
-        print(f"✅ Бот {self.user} успешно запущен!")
-
-    async def on_member_join(self, member: discord.Member):
-        unverified_role = member.guild.get_role(UNVERIFIED_ROLE_ID)
-        if unverified_role:
-            try:
-                await member.add_roles(unverified_role)
-            except Exception as e:
-                print(f"❌ Ошибка выдачи неверифицированной роли: {e}")
-
-        welcome_channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
-        if welcome_channel:
-            banner_file = create_welcome_banner(member.display_name)
-            embed = discord.Embed(
-                title="👑 Новый Странник ступил в Kingdom of Joy!",
-                description=f"Приветствуем тебя, {member.mention}!\nЗагляни в <#1520119059566559282> для навигации.",
-                color=0x7864c8,
-                timestamp=datetime.now(MSK)
-            )
-            embed.set_image(url="attachment://welcome_banner.png")
-            view = WelcomeButtonsView(member.guild.id)
-            try:
-                await welcome_channel.send(content=f"👋 {member.mention}", embed=embed, file=banner_file, view=view)
-            except Exception as e:
-                print(f"❌ Ошибка отправки приветствия: {e}")
-
-    async def on_message(self, message: discord.Message):
-        if message.author.bot or not message.guild:
-            return
-
-        # Реакции на стриггеренные слова
-        content = message.content
-        if any(tr in content for tr in BALKAN_TRIGGERS):
-            for emoji in CUSTOM_REACTIONS:
-                try:
-                    await message.add_reaction(emoji)
-                except Exception:
-                    pass
-
-        if any(tr in content for tr in SPECIAL_TRIGGERS):
-            try:
-                await message.add_reaction(CROWN_EMOJI)
-            except Exception:
-                pass
-
-        # Фильтр запрещённых слов
-        badwords_data = load_json(BADWORDS_FILE, {"words": [], "mute_time": "1h"})
-        words_to_filter = badwords_data.get("words", [])
-        if words_to_filter and not is_high_staff(message.author):
-            lower_msg = message.content.lower()
-            if any(w in lower_msg for w in words_to_filter):
-                try:
-                    await message.delete()
-                    mute_time = badwords_data.get("mute_time", "1h")
-                    duration = parse_duration(mute_time)
-                    await message.author.timeout(duration, reason="Запрещенные слова")
-                    await message.channel.send(make_blockquote(f"🔇 {message.author.mention} отправлен в мут за запрещенные слова на **{mute_time}**."))
-                    await send_log(message.guild, "🔇 Авто-Мут (Фильтр Слов)", f"Пользователь: {message.author.mention}\nСрок: `{mute_time}`\nТекст: *{message.content}*", color=0xe74c3c)
-                    return
-                except Exception as e:
-                    print(f"❌ Ошибка фильтра слов: {e}")
-
-        # Счётчик сообщений и уровни
-        if message.channel.id in COUNT_CHANNELS and VERIFY_ROLE_ID in [r.id for r in message.author.roles]:
-            counts = load_message_counts()
-            uid = str(message.author.id)
-            current_count = counts.get(uid, 0) + 1
-            counts[uid] = current_count
-            save_message_counts(counts)
-
-            await update_user_level(self, message.author, current_count, message.channel)
-
-        await self.process_commands(message)
+        return users_data.get("group-prefixes", {}).get(group_name, "")
 
 bot = KingdomBot()
 
+# ==================== АВТООБНОВЛЕНИЕ ОНЛАЙНА И ТАСКИ ====================
+@tasks.loop(minutes=3)
+async def auto_update_online_monitoring():
+    await bot.wait_until_ready()
+    try:
+        users_data = await get_users_yml_sftp()
+        total_players = len(users_data.get("players", {})) if users_data and "players" in users_data else 0
+
+        embed = discord.Embed(
+            title="📊 МОНИТОРИНГ И СТАТИСТИКА KINGDOM OF JOY",
+            description=(
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🟢 **Статус Сервера:** `Онлайн`\n"
+                f"👥 **Всего Игроков в базе:** `{total_players}`\n"
+                f"⏰ **Обновлено:** <t:{int(datetime.now(MSK).timestamp())}:R>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=0x2ecc71,
+            timestamp=datetime.now(MSK)
+        )
+        embed.set_footer(text="Автообновление каждые 3 минуты")
+
+        data = load_json(MONITORING_MSG_FILE, {})
+        channel_id = data.get("channel_id", BOT_CHANNEL)
+        msg_id = data.get("message_id")
+
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except Exception:
+                return
+
+        if channel:
+            if msg_id:
+                try:
+                    msg = await channel.fetch_message(msg_id)
+                    await msg.edit(embed=embed)
+                    return
+                except Exception:
+                    pass
+            msg = await channel.send(embed=embed)
+            save_json(MONITORING_MSG_FILE, {"channel_id": channel.id, "message_id": msg.id})
+    except Exception as e:
+        print(f"❌ Ошибка автообновления онлайна: {e}")
+
+@tasks.loop(seconds=30)
+async def check_reminders_task():
+    await bot.wait_until_ready()
+    reminders = load_json(REMINDERS_FILE, [])
+    now_ts = int(datetime.now(MSK).timestamp())
+    updated = []
+    for r in reminders:
+        if now_ts >= r["unix"]:
+            channel = bot.get_channel(r["channel_id"])
+            if channel:
+                try:
+                    await channel.send(f"⏰ <@{r['user_id']}> **Напоминание:** {r['text']}")
+                except Exception:
+                    pass
+        else:
+            updated.append(r)
+    if len(updated) != len(reminders):
+        save_json(REMINDERS_FILE, updated)
+
+@tasks.loop(hours=1)
+async def check_birthdays_task():
+    await bot.wait_until_ready()
+    now = datetime.now(MSK)
+    birthdays = load_birthdays()
+    updated = False
+    for uid, info in birthdays.items():
+        if info["day"] == now.day and info["month"] == now.month:
+            last_cong = info.get("last_congratulated", 0)
+            if last_cong != now.year:
+                channel = bot.get_channel(WELCOME_CHANNEL_ID) or bot.get_channel(BOT_CHANNEL)
+                if channel:
+                    try:
+                        embed = discord.Embed(
+                            title="🎉 🎂 С ДНЁМ РОЖДЕНИЯ! 🎂 🎉",
+                            description=f"🥳 Сегодня свой День Рождения отмечает <@{uid}>!\nЖелаем счастья, успехов и отличного настроения! ❤️✨",
+                            color=0xffd700,
+                            timestamp=now
+                        )
+                        await channel.send(content=f"🎉 <@{uid}>", embed=embed)
+                        info["last_congratulated"] = now.year
+                        updated = True
+                    except Exception:
+                        pass
+    if updated:
+        save_birthdays(birthdays)
+
+# ==================== ЭВЕНТЫ ====================
+@bot.event
+async def on_ready():
+    print(f"✅ Бот {bot.user} (ID: {bot.user.id}) успешно запущен и готов к работе!")
+    counts = load_message_counts()
+    for uid, count in counts.items():
+        bot.user_level_cache[int(uid)] = get_level(count)
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    # БЛОКИРОВКА РЕАКЦИЙ НА СООБЩЕНИЯ БОТА
+    if payload.user_id == bot.user.id:
+        return
+    channel = bot.get_channel(payload.channel_id)
+    if not channel:
+        try:
+            channel = await bot.fetch_channel(payload.channel_id)
+        except Exception:
+            return
+    try:
+        message = await channel.fetch_message(payload.message_id)
+        if message.author.id == bot.user.id:
+            user = bot.get_user(payload.user_id) or await bot.fetch_user(payload.user_id)
+            if user and not user.bot:
+                await message.remove_reaction(payload.emoji, user)
+    except Exception:
+        pass
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+
+    # Фильтр слов
+    badwords_data = load_json(BADWORDS_FILE, {"words": [], "mute_time": "1h"})
+    words_list = badwords_data.get("words", [])
+    content_lower = message.content.lower()
+
+    if words_list and any(w in content_lower for w in words_list):
+        if not is_high_staff(message.author):
+            try:
+                await message.delete()
+                duration = parse_duration(badwords_data.get("mute_time", "1h"))
+                await message.author.timeout(duration, reason="Фильтр запрещённых слов")
+                await message.channel.send(make_blockquote(f"🔇 {message.author.mention} отправлен в мут за использование запрещённых слов."), delete_after=10)
+                await send_log(message.guild, "🔇 Авто-Мут (Фильтр Слов)", f"Пользователь {message.author.mention} использовал запрещённое слово в канале {message.channel.mention}.", color=0xe74c3c)
+                return
+            except Exception as e:
+                print(f"Ошибка применения фильтра слов: {e}")
+
+    # Триггеры
+    if any(tr in content_lower for tr in BALKAN_TRIGGERS):
+        try:
+            for emoji in CUSTOM_REACTIONS:
+                await message.add_reaction(emoji)
+        except Exception:
+            pass
+
+    if any(tr in content_lower for tr in SPECIAL_TRIGGERS):
+        try:
+            await message.add_reaction(CROWN_EMOJI)
+        except Exception:
+            pass
+
+    # Счётчик сообщений и уровень
+    if message.channel.id in COUNT_CHANNELS:
+        counts = load_message_counts()
+        uid = str(message.author.id)
+        current_count = counts.get(uid, 0) + 1
+        counts[uid] = current_count
+        save_message_counts(counts)
+
+        if message.author.id not in bot.user_level_cache:
+            bot.user_level_cache[message.author.id] = get_level(current_count - 1)
+
+        await update_user_level(bot, message.author, current_count, message.channel)
+
+    await bot.process_commands(message)
+
+# ==================== ЗАПУСК ====================
 if __name__ == "__main__":
     bot.run(TOKEN)
