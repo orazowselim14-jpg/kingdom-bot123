@@ -1977,81 +1977,7 @@ class ApplicationVerdictView(discord.ui.View):
                     pass
             await interaction.message.edit(view=None)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)      #КОНЕЦ 
-            elif app_type == "Маппер":
-                    self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
-                    self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
-                    self.add_item(discord.ui.TextInput(label="Примеры работ / портфолио", placeholder="Ссылки на ваши карты или работы", style=discord.TextStyle.paragraph, max_length=1000, required=True))
-                elif app_type == "Киноклуб":
-                    self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
-                    self.add_item(discord.ui.TextInput(label="Ваш возраст", placeholder="Укажите возраст", max_length=3, required=True))
-                    self.add_item(discord.ui.TextInput(label="Любимые жанры и фильмы", placeholder="Расскажите о ваших вкусах в кино", style=discord.TextStyle.paragraph, max_length=500, required=True))
-                elif app_type == "Девушка":
-                    self.add_item(discord.ui.TextInput(label="Ваш никнейм", placeholder="Напишите ник", max_length=50, required=True))
-                    self.add_item(discord.ui.TextInput(label="Ссылка на соцсети / связь", placeholder="Для подтверждения верификации", max_length=100, required=True))
-
-    async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        thread = await interaction.channel.create_thread(
-            name=f"📝-заявка-{self.app_type}-{interaction.user.name}",
-            type=discord.ChannelType.private_thread,
-            invitable=False
-        )
-        await thread.add_user(interaction.user)
-        await interaction.followup.send(f"✨ Ваша заявка успешно отправлена в личный сектор: {thread.mention}", ephemeral=True)
-        
-        embed = discord.Embed(
-            title=f"📝 Заявка на должность: {self.app_type}",
-            description=f"**Кандидат:** {interaction.user.mention} (ID: `{interaction.user.id}`)",
-            color=0x5865F2,
-            timestamp=datetime.now(MSK)
-        )
-        for child in self.children:
-            if isinstance(child, discord.ui.TextInput):
-                embed.add_field(name=child.label, value=child.value if child.value else "Не указано", inline=False)
-        embed.set_footer(text="Kingdom of Joy | Applications System", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
-        
-        pings = f"<@&{CREATOR_ROLE_ID}> <@&{FOUNDER_ROLE_ID}>"
-        if self.app_type == "Модератор чата":
-            pings += f" <@&{MODERATOR_ROLE_ID}>"
-        elif self.app_type == "Маппер":
-            pings += f" <@&{ROLE_MAPPER}>"
-        elif self.app_type == "Киноклуб":
-            pings += f" <@&{ROLE_CINEMA}>"
-        elif self.app_type == "Девушка":
-            pings += f" <@&{ROLE_GIRL}>"
-
-        await thread.send(
-            content=f"🔔 **Новая заявка!** Проверяющие: {pings}",
-            embed=embed,
-            view=ApplicationReviewView(),
-            allowed_mentions=discord.AllowedMentions(roles=True, users=True)
-        )
-        await send_log(interaction.guild, "📝 Подана Заявка", f"Пользователь {interaction.user.mention} подал заявку на **{self.app_type}** в ветке {thread.mention}", color=0x3498db)
-
-class ApplicationReviewView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Одобрить", style=discord.ButtonStyle.success, emoji="✅", custom_id="app_approve_btn")
-    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_creator_or_founder(interaction.user):
-            await interaction.response.send_message("❌ Доступно только Создателям или Основателям.", ephemeral=True)
-            return
-        self.stop()
-        await interaction.response.send_message(make_blockquote("🟢 **Заявка официально одобрена!**"))
-        await interaction.channel.edit(locked=True, archived=True)
-        await send_log(interaction.guild, "🟢 Заявка Одобрена", f"Заявка в ветке {interaction.channel.mention} была одобрена {interaction.user.mention}.", color=0x2ecc71)
-
-    @discord.ui.button(label="Отклонить", style=discord.ButtonStyle.danger, emoji="❌", custom_id="app_reject_btn")
-    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_creator_or_founder(interaction.user):
-            await interaction.response.send_message("❌ Доступно только Создателям или Основателям.", ephemeral=True)
-            return
-        self.stop()
-        await interaction.response.send_message(make_blockquote("🔴 **Заявка отклонена.**"))
-        await interaction.channel.edit(locked=True, archived=True)
-        await send_log(interaction.guild, "🔴 Заявка Отклонена", f"Заявка в ветке {interaction.channel.mention} была отклонена {interaction.user.mention}.", color=0xe74c3c)
+            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
 
 # ==================== ИНИЦИАЛИЗАЦИЯ БОТА ====================
 class KingdomBot(commands.Bot):
@@ -2175,4 +2101,3 @@ if __name__ == "__main__":
         bot.run(TOKEN)
     except Exception as e:
         print(f"❌ Ошибка при запуске бота: {e}")
-            
