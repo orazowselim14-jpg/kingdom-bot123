@@ -206,6 +206,11 @@ def is_calm_member(member) -> bool:
         return True
     return any(r.id in CALM_ROLE_IDS for r in member.roles)
 
+def is_creator_or_founder(user: discord.Member) -> bool:
+    if not isinstance(user, discord.Member):
+        return False
+    return user.id in CREATOR_AND_ROLE_IDS or any(r.id in [CREATOR_ROLE_ID, FOUNDER_ROLE_ID] for r in user.roles)
+
 async def send_log(guild: discord.Guild, title: str, description: str, color: int = 0x7864c8, fields: list = None):
     if not guild:
         return
@@ -514,15 +519,12 @@ class MafiaGame:
         self.bot = bot
         self.channel = channel
         self.starter = starter
-        self.participants = [starter]
-        self.is_running = False
+        self.participants = []
+        self.is_running = True
         self.registration_active = True
-        self.time_left = 180  # 3 minutes
+        self.time_left = 180  # 3 minutes (180 секунд)
         self.timer_task = None
-        self.thread = None
-        self.players_roles = {}  # {member_id: role_name}
-        self.alive_players = set()
-        self.dead_players = set()
+        self.message = None
 
 class MafiaRegistrationView(discord.ui.View):
     def __init__(self, game: MafiaGame):
@@ -538,18 +540,197 @@ class MafiaRegistrationView(discord.ui.View):
             await interaction.response.send_message("⚠️ Вы уже зарегистрированы на игру!", ephemeral=True)
             return
         if len(self.game.participants) >= 30:
-            await interaction.response.send_message("❌ Достигнут ликс участников (30 человек).", ephemeral=True)
+            await interaction.response.send_message("❌ Достигнут лимит участников (30 человек).", ephemeral=True)
             return
+        
+        # Защита: проверяем, открыты ли у игрока личные сообщения (путем тестовой отправки)
+        try:
+            test_msg = await interaction.user.send("🛡️ Проверка личных сообщений для игры в Мафию успешна! Вы допущены к регистрации.")
+            try:
+                await test_msg.delete()
+            except:
+                pass
+        except discord.Forbidden:
+            await interaction.response.send_message("❌ У вас закрыты личные сообщения! Откройте ЛС в настройках Discord, чтобы бот мог выдать вам роль, и попробуйте снова.", ephemeral=True)
+            return
+        except Exception:
+            await interaction.response.send_message("❌ Не удалось отправить вам личное сообщение. Убедитесь, что ваши ЛС открыты.", ephemeral=True)
+            return
+
         self.game.participants.append(interaction.user)
         await interaction.response.send_message(f"✅ {interaction.user.mention} успешно зарегистрировался на игру в Мафию!", ephemeral=True)
 
-    @discord.ui.button(label="Добавить +30 секунд ⏱️", style=discord.ButtonStyle.secondary, custom_id="mafia_add_time_btn")
-    async def add_time(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="⏱️ Продлить (+30с)", style=discord.ButtonStyle.secondary, custom_id="mafia_extend_btn")
+    async def extend_time(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_creator_or_founder(interaction.user):
+            await interaction.response.send_message("❌ Продлевать регистрацию могут только Создатели или Основатели!", ephemeral=True)
+            return
         if not self.game.registration_active:
             await interaction.response.send_message("❌ Регистрация уже завершена.", ephemeral=True)
             return
         self.game.time_left += 30
-        await interaction.response.send_message(f"⏱️ Пользователь {interaction.user.mention} добавил 30 секунд к регистрации!", ephemeral=False)
+        await interaction.response.send_message(f"⏱️ Руководитель {interaction.user.mention} продлил регистрацию на 30 секунд! Осталось: {self.game.time_left} сек.", ephemeral=False)
+
+    @discord.ui.button(label="▶️ Начать игру", style=discord.ButtonStyle.success, custom_id="mafia_start_btn")
+    async def start_game_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_creator_or_founder(interaction.user):
+            await interaction.response.send_message("❌ Останавливать регистрацию и запускать игру могут только Создатели или Основатели!", ephemeral=True)
+            return
+        if not self.game.registration_active:
+            await interaction.response.send_message("❌ Регистрация уже завершена или игра уже идет.", ephemeral=True)
+            return
+        if len(self.game.participants) < 3:
+            await interaction.response.send_message("❌ Недостаточно участников для запуска игры (минимум 3).", ephemeral=True)
+            return
+        
+        self.game.registration_active = False
+        if self.game.timer_task:
+            self.game.timer_task.cancel()
+        
+        await interaction.response.send_message(f"🚀 Руководитель {interaction.user.mention} принудительно завершил регистрацию и запускает игру!")
+        await self.game.bot.start_mafia_match(self.game)
+
+    @discord.ui.button(label="❌ Отменить игру", style=discord.ButtonStyle.danger, custom_id="mafia_cancel_btn")
+    async def cancel_game_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_creator_or_founder(interaction.user):
+            await interaction.response.send_message("❌ Отменять игру могут только Создатели или Основатели!", ephemeral=True)
+            return
+        
+        self.game.registration_active = False
+        self.game.is_running = False
+        if self.game.timer_task:
+            self.game.timer_task.cancel()
+        
+        for child in self.children:
+            child.disabled = True
+        
+        try:
+            await interaction.message.edit(view=self)
+        except:
+            pass
+        
+        await interaction.response.send_message(f"🛑 Игра в Мафию была полностью отменена создателем/основателем {interaction.user.mention}.")
+        await send_log(interaction.guild, "🛑 Мафия Отменена", f"Создатель/основатель {interaction.user.mention} отменил текущую игру в Мафию.", color=0xe74c3c)
+
+async def mafia_timer_loop(bot, game: MafiaGame):
+    # Цикл напоминаний и обновления каждые 3 секунды в течение 3 минут (180 сек)
+    while game.registration_active and game.time_left > 0:
+        await asyncio.sleep(3)
+        if not game.registration_active:
+            break
+        game.time_left -= 3
+        
+        if game.message:
+            embed = discord.Embed(
+                title="🕶️ Регистрация на игру в Мафию",
+                description=(
+                    f"Регистрация активна!\n"
+                    f"⏱️ Осталось времени: **{game.time_left} сек.**\n"
+                    f"👥 Зарегистрировано участников: **{len(game.participants)} / 30**\n\n"
+                    f"⚠️ Напоминание: каждые 3 секунды обновление таймера. Убедитесь, что у вас открыты личные сообщения[cite: 12]."
+                ),
+                color=0x7864c8,
+                timestamp=datetime.now(MSK)
+            )
+            embed.set_footer(text="Kingdom of Joy | Mafia System")
+            try:
+                await game.message.edit(embed=embed)
+            except Exception:
+                pass
+        
+        if game.time_left <= 0:
+            game.registration_active = False
+            break
+
+    if not game.registration_active and game.is_running:
+        if len(game.participants) >= 3:
+            await bot.start_mafia_match(game)
+        else:
+            if game.message:
+                try:
+                    await game.channel.send("❌ Время регистрации истекло, но набралось менее 3 участников. Игра отменена.")
+                except:
+                    pass
+
+# Метод старта матча и отправки ролей в ЛС
+async def start_mafia_match(bot, game: MafiaGame):
+    game.registration_active = False
+    game.is_running = True
+    
+    participants = game.participants
+    if len(participants) < 3:
+        return
+
+    random.shuffle(participants)
+    assigned_roles = {}
+    
+    for i, player in enumerate(participants):
+        if i == 0:
+            role = "Мафия 🦹‍♂️"
+        elif i == 1:
+            role = "Шериф 🕵️‍♂️"
+        else:
+            role = "Мирный житель 🧑"
+        assigned_roles[player.id] = role
+
+    # Выдача ролей строго в личные сообщения
+    success_count = 0
+    for player in participants:
+        role = assigned_roles[player.id]
+        try:
+            await player.send(
+                f"🎮 **Игра в Мафию началась!**\n"
+                f"Ваша секретная роль на эту игру: **{role}**\n"
+                f"Удачи в игре!"
+            )
+            success_count += 1
+        except Exception:
+            pass
+
+    embed = discord.Embed(
+        title="🎬 Игра в Мафию Официально Началась!",
+        description=(
+            f"👥 Всего участников: **{len(participants)}**\n"
+            f"📨 Роли успешно разосланы участникам в личные сообщения.\n"
+            f"Приятной игры!"
+        ),
+        color=0x2ecc71,
+        timestamp=datetime.now(MSK)
+    )
+    await game.channel.send(embed=embed)
+    await send_log(game.channel.guild, "🎮 Началась Мафия", f"Игра в мафию запущена в канале {game.channel.mention} с {len(participants)} участниками.", color=0x2ecc71)
+
+# Привязываем метод к боту при инициализации
+commands.Bot.start_mafia_match = start_mafia_match
+
+@app_commands.command(name="mafia", description="🕶️ Запустить новую игру в Мафию (регистрация 3 минуты)")
+async def mafia_cmd(interaction: discord.Interaction):
+    if not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Запускать игру могут только модераторы и руководство.", ephemeral=True)
+        return
+    
+    game = MafiaGame(interaction.client, interaction.channel, interaction.user)
+    view = MafiaRegistrationView(game)
+    
+    embed = discord.Embed(
+        title="🕶️ Регистрация на игру в Мафию",
+        description=(
+            f"Игру создал: {interaction.user.mention}\n"
+            f"⏱️ Время регистрации: **180 секунд (3 минуты)**\n"
+            f"👥 Зарегистрировано: **0 / 30**\n\n"
+            f"⚠️ **Внимание:** Для участия у вас должны быть **открыты личные сообщения**[cite: 12] (бот выдает роли туда)."
+        ),
+        color=0x7864c8,
+        timestamp=datetime.now(MSK)
+    )
+    embed.set_footer(text="Kingdom of Joy | Mafia System")
+    
+    await interaction.response.send_message(embed=embed, view=view)
+    msg = await interaction.original_response()
+    game.message = msg
+    
+    # Запускаем фоновый таймер с регулярным обновлением каждые 3 секунды
+    game.timer_task = asyncio.create_task(mafia_timer_loop(interaction.client, game))
 
 # ==================== ОСТАЛЬНЫЕ СЛЭШ-КОМАНДЫ ====================
 @app_commands.command(name="lk", description="📊 Показать личный кабинет (свой или другого игрока)")
@@ -686,7 +867,7 @@ async def bind(interaction: discord.Interaction, nickname: str, password: str):
     discord_id = str(interaction.user.id)
     users_data = await get_users_yml_sftp()
     if not users_data or "players" not in users_data:
-        await interaction.followup.send("❌ Ошибка чтения базы игроков с сервера.")
+        await interaction.followup.send("❌ Ошибка чтения базы игроков с сервера.", ephemeral=True)
         return
     existing = await interaction.client.find_player_by_discord(discord_id, users_data)
     if existing:
@@ -1122,7 +1303,6 @@ async def resetmessages(interaction: discord.Interaction):
     except Exception as e:
         await interaction.followup.send(f"❌ Ошибка: {e}", ephemeral=True)
 
-# ==================== КОМАНДА SEND (СЛЭШ И ТЕКСТОВАЯ) ====================
 @app_commands.command(name="send", description="📨 Отправить объявление/сообщение в канал (только для руководства)")
 @app_commands.describe(text="Текст сообщения", color="Цвет в HEX (например #ff0000 или ff0000)")
 async def send_cmd(interaction: discord.Interaction, text: str, color: str = None):
@@ -1477,7 +1657,7 @@ async def resetplayer(interaction: discord.Interaction, nickname: str):
     else:
         await interaction.followup.send("❌ Ошибка сохранения данных.")
 
-# ==================== UI КОМПОНЕНТЫ И ИСПРАВЛЕННЫЕ АНКЕТЫ ====================
+# ==================== UI КОМПОНЕНТЫ И АНКЕТЫ ====================
 class WelcomeButtonsView(discord.ui.View):
     def __init__(self, guild_id: int = 0):
         super().__init__(timeout=None)
@@ -1645,6 +1825,11 @@ class SupportHubView(discord.ui.View):
             0xf1c40f
         )
 
+class ApplicationView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+        self.add_item(ApplicationSelect())
+
 class ApplicationSelect(discord.ui.Select):
     def __init__(self):
         options = [
@@ -1773,17 +1958,23 @@ class ApplicationVerdictView(discord.ui.View):
             await interaction.message.edit(view=None)
         except Exception as e:
             await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
-    @discord.ui.button(label="❌ Отказать", style=discord.ButtonStyle.danger, custom_id="app_reject")
+
+    @discord.ui.button(label="❌ Отклонить", style=discord.ButtonStyle.danger, custom_id="app_reject")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not any(r.id in HIGHER_ROLES for r in interaction.user.roles) and interaction.user.id not in CREATOR_AND_ROLE_IDS:
             await interaction.response.send_message("❌ У вас нет прав для отклонения заявок.", ephemeral=True)
             return
-        await interaction.response.send_message("❌ Заявка отклонена.")
-        await send_log(interaction.guild, "❌ Заявка отклонена", f"Заявка пользователя с ID {self.applicant_id} была отклонена.", color=0xe74c3c)
-        await interaction.channel.edit(locked=True, archived=True)
-        await interaction.message.edit(view=None)
-
-class ApplicationView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-        self.add_item(ApplicationSelect())
+        guild = interaction.guild
+        member = guild.get_member(self.applicant_id)
+        try:
+            await interaction.response.send_message("❌ Заявка отклонена.")
+            await send_log(guild, "❌ Заявка отклонена", f"Заявка пользователя <@{self.applicant_id}> на {self.app_type} была отклонена модератором {interaction.user.mention}.", color=0xe74c3c)
+            await interaction.channel.edit(locked=True, archived=True)
+            if member:
+                try:
+                    await member.send(f"❌ Ваша заявка на должность **{self.app_type}** была отклонена.")
+                except:
+                    pass
+            await interaction.message.edit(view=None)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
