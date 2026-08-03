@@ -15,6 +15,12 @@ import aiohttp
 import yaml
 import paramiko
 import time
+import socket
+from mcstatus import JavaServer
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 
 # ==================== КОНСТАНТЫ ====================
 LK_CHANNEL_ID = 1529937315890204836
@@ -49,7 +55,19 @@ SUPPORT_CHANNEL_ID = 1526688069464625305
 MEDIA_CHANNEL_ID = 1505266075347193976
 COMMUNICATION_CHANNEL_ID = 1505239843486306374
 WELCOME_CHANNEL_ID = 1505280068656824400
+MONITORING_CHANNEL_ID = 1526686756580229200
 EXCLUDED_LOG_CHANNEL = 1505543466426437712
+BOT_ID = 1521131389229994165
+
+# ID веток с гифками
+GOOD_MORNING_THREAD = 1533936861805019276
+GOOD_NIGHT_THREAD = 1533936840615137374
+
+# Файлы для мониторинга МЦ
+MSG_ID_FILE = "mc_status_msg_id.txt"
+HISTORY_FILE = "online_history.json"
+online_history = []
+
 BALKAN_TRIGGERS = ['БАЛКАН', 'балкан', 'balkan', 'BALKAN', 'Balkan', 'Балкан']
 SPECIAL_TRIGGERS = ['Вова', 'vovancho', 'вован', 'вова', 'вовчек', 'ВОВА', 'харчек', 'харута', 'ХАРУТА', 'haryta', 'Haryta']
 CUSTOM_REACTIONS = [
@@ -287,6 +305,199 @@ async def update_user_level(bot: commands.Bot, member: discord.Member, new_count
         except Exception as e:
             print(f"Ошибка отправки поздравления: {e}")
 
+# ==================== ИСТОРИЯ И ГРАФИКИ (ИЗ MC_STATUS) ====================
+def save_history():
+    try:
+        data = [{"t": item[0].isoformat(), "o": item[1]} for item in online_history]
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception as e:
+        print(f"⚠️ Ошибка сохранения истории: {e}")
+
+def load_history():
+    global online_history
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                online_history = [(datetime.fromisoformat(item["t"]), item["o"]) for item in data]
+                print(f"✅ Загружена история онлайна: {len(online_history)} записей.")
+        except Exception as e:
+            print(f"⚠️ Ошибка загрузки истории: {e}")
+            online_history = []
+
+load_history()
+
+def parse_address(addr: str):
+    addr = addr.strip()
+    if ":" in addr:
+        host, port_str = addr.split(":", 1)
+        try:
+            return host.strip(), int(port_str.strip())
+        except ValueError:
+            return host.strip(), 25727
+    return addr, 25727
+
+async def check_mc_server():
+    targets = [SERVER_IP] if SERVER_IP and "xxx" not in SERVER_IP else []
+    targets.extend(DISPLAY_DOMAINS)
+    for addr in targets:
+        host, port = parse_address(addr)
+        is_port_open = False
+        try:
+            loop = asyncio.get_event_loop()
+            def ping_socket():
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(3.0)
+                res = s.connect_ex((host, port))
+                s.close()
+                return res == 0
+            is_port_open = await loop.run_in_executor(None, ping_socket)
+        except Exception as e:
+            print(f"⚠️ Ошибка сокета {host}:{port} -> {e}")
+        if is_port_open:
+            try:
+                server = JavaServer(host, port)
+                status = await server.async_status()
+                players_sample = status.players.sample if status.players.sample else []
+                player_names = [p.name for p in players_sample]
+                return True, status.players.online, status.players.max, player_names
+            except Exception as e:
+                print(f"⚠️ Порт открыт, сбой mcstatus ({host}:{port}): {e}")
+                return True, 0, 100, []
+    return False, 0, 100, []
+
+def generate_double_graph(history_data, max_slots=100):
+    fig, (ax24, ax1h) = plt.subplots(2, 1, figsize=(8, 6), facecolor='#1e1f22')
+    now_msk = datetime.now(MSK_TZ)
+    ax24.set_facecolor('#1e1f22')
+    cutoff_24h = now_msk - timedelta(hours=24)
+    data_24h = [item for item in history_data if item[0] >= cutoff_24h]
+    if not data_24h:
+        data_24h = [(now_msk, 0)]
+    times_24 = [item[0].strftime("%H:%M") for item in data_24h]
+    players_24 = [item[1] for item in data_24h]
+    ax24.plot(times_24, players_24, color='#7864c8', linewidth=2)
+    ax24.fill_between(times_24, players_24, color='#7864c8', alpha=0.25)
+    ax24.set_title("📊 ИСТОРИЯ ОНЛАЙНА ЗА 24 ЧАСА (ИНТЕРВАЛ 2 МИНУТЫ)", fontsize=9, color='#808080', pad=8)
+    ax24.yaxis.set_major_locator(MaxNLocator(integer=True))
+    ax24.set_ylim(0, max(max_slots, max(players_24) + 2))
+    step_24 = max(1, len(times_24) // 12)
+    ax24.set_xticks(range(0, len(times_24), step_24))
+    ax24.set_xticklabels([times_24[i] for i in range(0, len(times_24), step_24)], rotation=0)
+    ax24.tick_params(colors='#808080', labelsize=8)
+    for spine in ax24.spines.values():
+        spine.set_color('#2b2d31')
+    ax24.grid(True, color='#2b2d31', linestyle='--', linewidth=0.5)
+    
+    ax1h.set_facecolor('#1e1f22')
+    cutoff_1h = now_msk - timedelta(hours=1)
+    data_1h = [item for item in history_data if item[0] >= cutoff_1h]
+    if not data_1h:
+        data_1h = [(now_msk, 0)]
+    times_1h = [item[0].strftime("%H:%M") for item in data_1h]
+    players_1h = [item[1] for item in data_1h]
+    ax1h.plot(times_1h, players_1h, color='#2ecc71', marker='o', linewidth=2, markersize=4)
+    ax1h.fill_between(times_1h, players_1h, color='#2ecc71', alpha=0.25)
+    ax1h.set_title("⚡ ДЕТАЛИЗАЦИЯ ЗА ПОСЛЕДНИЙ 1 ЧАС", fontsize=9, color='#808080', pad=8)
+    ax1h.yaxis.set_major_locator(MaxNLocator(integer=True))
+    ax1h.set_ylim(0, max(max_slots, max(players_1h) + 2))
+    step_1h = max(1, len(times_1h) // 4)
+    ax1h.set_xticks(range(0, len(times_1h), step_1h))
+    ax1h.set_xticklabels([times_1h[i] for i in range(0, len(times_1h), step_1h)], rotation=0)
+    ax1h.tick_params(colors='#808080', labelsize=8)
+    for spine in ax1h.spines.values():
+        spine.set_color('#2b2d31')
+    ax1h.grid(True, color='#2b2d31', linestyle='--', linewidth=0.5)
+    plt.tight_layout()
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format='png', facecolor='#1e1f22', edgecolor='none', dpi=120)
+    buffer.seek(0)
+    plt.close()
+    return discord.File(fp=buffer, filename="online_graph.png")
+
+def save_msg_id(msg_id: int):
+    with open(MSG_ID_FILE, "w", encoding="utf-8") as f:
+        f.write(str(msg_id))
+
+def load_msg_id() -> int:
+    if os.path.exists(MSG_ID_FILE):
+        try:
+            with open(MSG_ID_FILE, "r", encoding="utf-8") as f:
+                return int(f.read().strip())
+        except Exception:
+            return None
+    return None
+
+class StatusButtonsView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    @discord.ui.button(label="Обновить сейчас", style=discord.ButtonStyle.primary, emoji="🔄", custom_id="mc_refresh_status_btn")
+    async def refresh_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await update_status_message(interaction.client)
+        await interaction.followup.send("✅ Данные мониторинга обновлены!", ephemeral=True)
+
+async def update_status_message(bot: commands.Bot):
+    try:
+        channel = bot.get_channel(MONITORING_CHANNEL_ID)
+        if not channel:
+            try:
+                channel = await bot.fetch_channel(MONITORING_CHANNEL_ID)
+            except Exception as e:
+                print(f"❌ Канал мониторинга {MONITORING_CHANNEL_ID} не найден: {e}")
+                return
+        is_online, current_players, max_players, player_names = await check_mc_server()
+        print(f"🔄 Статус: {'онлайн' if is_online else 'офлайн'}, игроков: {current_players}/{max_players}")
+        now_msk = datetime.now(MSK)
+        time_str = now_msk.strftime("%H:%M")
+        online_history.append((now_msk, current_players if is_online else 0))
+        if len(online_history) > 720:
+            online_history.pop(0)
+        save_history()
+        main_public_domain = DISPLAY_DOMAINS[0] if DISPLAY_DOMAINS else "Оф. Сервер"
+        if is_online:
+            embed = discord.Embed(title="🎮 Мониторинг Minecraft Сервера", color=0x2ecc71, timestamp=now_msk)
+            embed.add_field(name="🟢 Статус", value="**Сервер онлайн!**", inline=False)
+            embed.add_field(name="👥 Онлайн", value=f"`{current_players} / {max_players}`", inline=True)
+            embed.add_field(name="⚡ Работающий адрес", value=f"`{main_public_domain}`", inline=True)
+            if player_names:
+                players_list = "\n".join([f"• {name}" for name in player_names])
+                embed.add_field(name="👤 Игроки онлайн", value=players_list, inline=False)
+        else:
+            embed = discord.Embed(title="🎮 Мониторинг Minecraft Сервера", color=0xe74c3c, timestamp=now_msk)
+            embed.add_field(name="🔴 Статус", value="**Сервер недоступен или выключен.**", inline=False)
+            embed.add_field(name="⚠️ Ошибка подключения", value="`Сервер не отвечает по указанным адресам`", inline=False)
+        domains_text = "\n".join([f"• `{d}`" for d in DISPLAY_DOMAINS])
+        embed.add_field(name="🌐 Домены для подключения", value=domains_text, inline=False)
+        embed.set_footer(text=f"Авто-обновление раз в 2 минуты • Сегодня, в {time_str}")
+        max_slots = max_players if max_players > 0 else 100
+        graph_file = generate_double_graph(online_history, max_slots=max_slots)
+        embed.set_image(url="attachment://online_graph.png")
+        msg_id = load_msg_id()
+        msg = None
+        if msg_id:
+            try:
+                msg = await channel.fetch_message(msg_id)
+            except Exception as e:
+                print(f"⚠️ Не удалось найти сообщение {msg_id}: {e}")
+                msg = None
+        try:
+            if msg:
+                await msg.edit(embed=embed, attachments=[graph_file], view=StatusButtonsView())
+                print(f"✅ Обновлено сообщение {msg.id} в канале {channel.id}")
+            else:
+                new_msg = await channel.send(embed=embed, file=graph_file, view=StatusButtonsView())
+                save_msg_id(new_msg.id)
+                print(f"✅ Создано новое сообщение мониторинга с ID: {new_msg.id}")
+        except discord.Forbidden:
+            print(f"❌ Нет прав на редактирование/отправку в канале {channel.id}")
+        except Exception as e:
+            print(f"❌ Ошибка отправки/обновления мониторинга: {e}")
+    except Exception as e:
+        print(f"❌ Критическая ошибка в update_status_message: {e}")
+        traceback.print_exc()
+
 # ==================== ИНТЕРАКТИВНЫЙ БРАК ====================
 class MarriageProposalView(discord.ui.View):
     def __init__(self, author: discord.Member, target: discord.Member):
@@ -299,17 +510,14 @@ class MarriageProposalView(discord.ui.View):
         if interaction.user.id != self.target.id:
             await interaction.response.send_message("❌ Это предложение адресовано не вам!", ephemeral=True)
             return
-
         marriages = load_marriages()
         if str(self.author.id) in marriages or str(self.target.id) in marriages:
             await interaction.response.send_message("❌ Один из участников уже состоит в браке!", ephemeral=True)
             return
-
         now_ts = int(datetime.now(MSK).timestamp())
         marriages[str(self.author.id)] = {"partner": self.target.id, "date": now_ts}
         marriages[str(self.target.id)] = {"partner": self.author.id, "date": now_ts}
         save_marriages(marriages)
-
         self.stop()
         embed = discord.Embed(title="💍 Священный Союз Заключён!", description=f"🎉 {self.author.mention} и {self.target.mention} теперь официально в браке!\nПоздравляем новобрачных! 💕", color=0xff69b4, timestamp=datetime.now(MSK))
         await interaction.response.edit_message(content=None, embed=embed, view=None)
@@ -402,7 +610,7 @@ async def get_dr(interaction: discord.Interaction, user: discord.Member = None):
         return
     await interaction.response.send_message(make_blockquote(f"🎂 День рождения {target.mention}: **{bdate}**"))
 
-# ==================== СИСТЕМА МАФИИ (ПОЛНЫЙ РЕВОРК С КНОПКАМИ И ЛС ЛОГАМИ) ====================
+# ==================== СИСТЕМА МАФИИ ====================
 mafia_configs = {}
 
 class MafiaGame:
@@ -435,10 +643,8 @@ class MafiaGame:
     def check_win(self):
         mafia = [p for p in self.alive if self.roles.get(p.id) in ["Мафия", "Дон"]]
         town = [p for p in self.alive if self.roles.get(p.id) not in ["Мафия", "Дон"]]
-        if len(mafia) >= len(town):
-            return "Мафия"
-        if len(mafia) == 0:
-            return "Город"
+        if len(mafia) >= len(town): return "Мафия"
+        if len(mafia) == 0: return "Город"
         return None
 
     async def start_night(self):
@@ -446,30 +652,21 @@ class MafiaGame:
         self.choices = {}
         alive = self.get_alive_players_list()
         alive_ids = [p.id for p in alive]
-
-        # ПУБЛИЧНО: Минимум информации
         await self.channel.send("🌙 **Наступила ночь.**")
-        
-        # ЛС СОЗДАТЕЛЮ: Полная инфа
         log_embed = discord.Embed(title="🌙 Начало ночи", color=0x222222)
         log_embed.add_field(name="Живые игроки", value=", ".join([p.mention for p in alive]))
         await self.send_creator_log(log_embed)
-
         for p in alive:
             role = self.roles.get(p.id)
             if role in ["Мафия", "Дон", "Доктор", "Детектив", "Бармен", "Путана"]:
                 try:
                     await p.send(f"🕵️ **Ночь началась!** Твоя роль: **{role}**", view=self.get_role_view(p, alive_ids))
-                except:
-                    pass
-
+                except: pass
         start_time = datetime.now(MSK)
         needed_roles = [p for p in alive if self.roles.get(p.id) in ["Мафия", "Дон", "Доктор", "Детектив", "Бармен", "Путана"]]
         while datetime.now(MSK) - start_time < timedelta(seconds=60):
-            if len(self.choices) >= len(needed_roles):
-                break
+            if len(self.choices) >= len(needed_roles): break
             await asyncio.sleep(1)
-
         self.night_phase = False
         await self.resolve_night()
 
@@ -491,13 +688,10 @@ class MafiaGame:
         detective_invest = self.choices.get("detective_invest")
         detective_shoot = self.choices.get("detective_shoot")
         harlot_target = self.choices.get("harlot")
-
         dead_players = []
         message_lines = []
         night_silent = False
         harlot_blocked = None
-
-        # ЛС СОЗДАТЕЛЮ: Подробный лог выборов
         log_embed = discord.Embed(title="🔍 Ночные выборы", color=0xffaa00)
         if mafia_target: log_embed.add_field(name="Мафия/Дон", value=f"Убить <@{mafia_target}>", inline=False)
         if doctor_target: log_embed.add_field(name="Доктор", value=f"Спасти <@{doctor_target}>", inline=False)
@@ -505,7 +699,6 @@ class MafiaGame:
         if detective_invest: log_embed.add_field(name="Детектив", value=f"Проверить <@{detective_invest}>", inline=False)
         if detective_shoot: log_embed.add_field(name="Детектив", value=f"Застрелить <@{detective_shoot}>", inline=False)
         if barman_target: log_embed.add_field(name="Бармен", value=f"Напоить <@{barman_target}>", inline=False)
-
         if harlot_target:
             harlot_victim = discord.utils.get(self.participants, id=harlot_target)
             if harlot_victim:
@@ -523,11 +716,9 @@ class MafiaGame:
                 elif blocked_role == "Бармен":
                     barman_target = None
                     message_lines.append(f"🥂 **Путана** соблазнила бармена! Он забыл про напитки.")
-
         detective_player = None
         for p in self.participants:
             if self.roles.get(p.id) == "Детектив": detective_player = p; break
-
         if detective_shoot and not harlot_blocked == detective_player:
             target_p = discord.utils.get(self.participants, id=int(detective_shoot))
             if target_p and self.roles.get(target_p.id) in ["Мафия", "Дон"]:
@@ -541,7 +732,6 @@ class MafiaGame:
             if target_p and detective_player:
                 role_info = self.roles.get(target_p.id, "Неизвестно")
                 await detective_player.send(f"🔍 **Результат проверки:** Игрок {target_p.display_name} — роль **{role_info}**")
-
         if mafia_target and not night_silent:
             victim = discord.utils.get(self.participants, id=mafia_target)
             if victim and victim not in dead_players:
@@ -557,50 +747,36 @@ class MafiaGame:
                     message_lines.append(f"🔪 **Мафия** жестоко убила {victim.mention}!")
                 else:
                     message_lines.append(f"🌙 Покушение на {victim.mention} провалилось!")
-
         if not dead_players and not message_lines: message_lines.append("Ночь прошла тихо, все живы.")
-
         for p in dead_players:
             if p in self.alive: self.alive.remove(p)
-
         log_embed.add_field(name="📌 Итог ночи", value="\n".join(message_lines), inline=False)
         await self.send_creator_log(log_embed)
-
         winner = self.check_win()
         if winner:
             embed = discord.Embed(title="🏆 Игра окончена!", description=f"Победила фракция: **{winner}**", color=0xffd700)
             await self.channel.send(embed=embed)
             self.game_over = True
             return
-
-        # ПУБЛИЧНО: Показываем только убийства и общий итог
         public_desc = "\n".join([l for l in message_lines if "кто-то" not in l])
         embed = discord.Embed(title="🌅 Утро", description=public_desc, color=0x7864c8)
         embed.set_footer(text="Обсуждение 60 сек!")
         await self.channel.send(embed=embed)
-
         await asyncio.sleep(60)
-        
         embed = discord.Embed(title="🗳️ Начинается голосование!", description="Введите `!голос @Игрок`.\nГолосование завершится **моментально** по общему согласию, либо через 40 секунд.", color=0x2ecc71)
         await self.channel.send(embed=embed)
-
         self.votes = {}
         start_time = datetime.now(MSK)
         total_alive = len(self.alive)
-
         while datetime.now(MSK) - start_time < timedelta(seconds=40):
-            if len(self.votes) >= total_alive:
-                break
+            if len(self.votes) >= total_alive: break
             await asyncio.sleep(1)
-
         most_voted = None
         max_votes = 0
         for target_id, voters in self.votes.items():
             if len(voters) > max_votes:
                 max_votes = len(voters)
                 most_voted = target_id
-
-        # ЛС СОЗДАТЕЛЮ: Детальный разбор голосов
         vote_embed = discord.Embed(title="🗳️ Итоги дневного голосования", color=0xf1c40f)
         if self.votes:
             for target_id, voters in self.votes.items():
@@ -609,7 +785,6 @@ class MafiaGame:
         else:
             vote_embed.description = "Никто не проголосовал."
         await self.send_creator_log(vote_embed)
-
         if most_voted:
             banished = discord.utils.get(self.participants, id=most_voted)
             if banished and banished in self.alive:
@@ -617,16 +792,13 @@ class MafiaGame:
                 await self.channel.send(f"💀 По результатам голосования игрок {banished.mention} был изгнан!")
         else:
             await self.channel.send("🗳️ Никто не набрал голосов, сегодня никто не вылетает.")
-
         winner = self.check_win()
         if winner:
             embed = discord.Embed(title="🏆 Игра окончена!", description=f"Победила фракция: **{winner}**", color=0xffd700)
             await self.channel.send(embed=embed)
             self.game_over = True
             return
-
-        if not self.game_over:
-            await self.start_night()
+        if not self.game_over: await self.start_night()
 
 # ==================== VIEWS ДЛЯ МАФИИ (Меню в ЛС) ====================
 class BaseActionView(discord.ui.View):
@@ -729,20 +901,16 @@ async def mafia_cmd(interaction: discord.Interaction):
     if not is_creator_or_founder(interaction.user) and not any(r.id in HIGHER_ROLES for r in interaction.user.roles):
         await interaction.response.send_message("❌ Запускать игру могут только модераторы и руководство.", ephemeral=True)
         return
-    
     await interaction.response.defer()
     config = mafia_configs.get(interaction.guild_id, {})
     game = MafiaGame(interaction.client, interaction.channel, interaction.user)
     interaction.client.mafia_game = game
-
     embed = discord.Embed(title="🕶️ Регистрация на игру в Мафию", color=0x7864c8)
     view = MafiaRegistrationView(game, interaction.client)
     await interaction.followup.send(embed=embed, view=view)
     msg = await interaction.original_response()
     game.message = msg
-
     await view.update_embed()
-
     async def registration_timer():
         while game.registration_active and game.registration_time_left > 0:
             await asyncio.sleep(1)
@@ -752,16 +920,13 @@ async def mafia_cmd(interaction: discord.Interaction):
             if game.registration_time_left <= 0:
                 game.registration_active = False
                 break
-        
         if game.registration_active and len(game.participants) < 4:
             await interaction.channel.send("❌ Меньше 4 игроков. Игра отменена.")
             game.registration_active = False
             return
-        
         if len(game.participants) >= 4:
             await interaction.channel.send("⏰ Время регистрации истекло! Начинаем игру!")
             await view.start_game()
-
     view.timer_task = asyncio.create_task(registration_timer())
 
 class MafiaRegistrationView(discord.ui.View):
@@ -773,20 +938,10 @@ class MafiaRegistrationView(discord.ui.View):
 
     async def update_embed(self):
         players_list = "\n".join([f"{i+1}. {p.mention}" for i, p in enumerate(self.game.participants)]) if self.game.participants else "Пока никого..."
-        embed = discord.Embed(
-            title="🕶️ Регистрация на игру в Мафию",
-            description=(
-                f"**Игру создал:** {self.game.starter.mention}\n"
-                f"**⏱️ Осталось:** `{self.game.registration_time_left}` сек.\n"
-                f"**👥 Участников:** `{len(self.game.participants)} / 30`\n\n"
-                f"**📋 Список игроков:**\n{players_list}"
-            ),
-            color=0x7864c8
-        )
+        embed = discord.Embed(title="🕶️ Регистрация на игру в Мафию", description=(f"**Игру создал:** {self.game.starter.mention}\n" f"**⏱️ Осталось:** `{self.game.registration_time_left}` сек.\n" f"**👥 Участников:** `{len(self.game.participants)} / 30`\n\n" f"**📋 Список игроков:**\n{players_list}"), color=0x7864c8)
         try:
             await self.game.message.edit(embed=embed, view=self)
-        except:
-            pass
+        except: pass
 
     @discord.ui.button(label="Участвовать в Мафии 🕶️", style=discord.ButtonStyle.primary, row=0)
     async def join_mafia(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -799,14 +954,12 @@ class MafiaRegistrationView(discord.ui.View):
         if len(self.game.participants) >= 30:
             await interaction.response.send_message("❌ Лимит 30 человек.", ephemeral=True)
             return
-        
         try:
             test_msg = await interaction.user.send("🛡️ Проверка ЛС успешна. Вы допущены.")
             await test_msg.delete()
         except discord.Forbidden:
             await interaction.response.send_message("❌ У вас закрыты ЛС! Откройте их в настройках.", ephemeral=True)
             return
-        
         self.game.participants.append(interaction.user)
         await interaction.response.send_message(f"✅ {interaction.user.mention} зарегистрирован!", ephemeral=True)
         await self.update_embed()
@@ -834,7 +987,6 @@ class MafiaRegistrationView(discord.ui.View):
         if len(self.game.participants) < 4:
             await interaction.response.send_message("❌ Минимум 4 игрока.", ephemeral=True)
             return
-        
         self.game.registration_active = False
         if self.timer_task:
             self.timer_task.cancel()
@@ -846,13 +998,11 @@ class MafiaRegistrationView(discord.ui.View):
         participants = self.game.participants
         random.shuffle(participants)
         self.game.alive = participants[:]
-
         mafia_count = config.get("mafia", 1)
         doctor_count = config.get("doctor", 1)
         detective_count = config.get("detective", 0)
         barman_count = config.get("barman", 0)
         harlot_count = config.get("harlot", 0)
-
         if len(participants) >= 6:
             if detective_count == 0: detective_count = 1
             if harlot_count == 0: harlot_count = 1
@@ -860,7 +1010,6 @@ class MafiaRegistrationView(discord.ui.View):
             if barman_count == 0: barman_count = 1
         if len(participants) >= 10:
             if mafia_count == 1: mafia_count = 2
-
         roles_to_assign = []
         for _ in range(mafia_count): roles_to_assign.append("Мафия")
         if mafia_count >= 1: roles_to_assign.append("Дон")
@@ -868,29 +1017,23 @@ class MafiaRegistrationView(discord.ui.View):
         for _ in range(detective_count): roles_to_assign.append("Детектив")
         for _ in range(barman_count): roles_to_assign.append("Бармен")
         for _ in range(harlot_count): roles_to_assign.append("Путана")
-
         for i, p in enumerate(participants):
             if i < len(roles_to_assign):
                 self.game.roles[p.id] = roles_to_assign[i]
             else:
                 self.game.roles[p.id] = "Мирный житель"
-
         for p in participants:
             role = self.game.roles[p.id]
             try:
                 await p.send(f"🎮 **Игра началась!**\nВаша роль: **{role}**\nСкоро наступит ночь.")
-            except:
-                pass
-
+            except: pass
         embed = discord.Embed(title="🎬 Игра в Мафию Началась!", description=f"**Участников:** {len(participants)}\n🌙 Наступает ночь...", color=0x2ecc71)
         embed.set_footer(text="Роли разосланы в ЛС.")
         await self.game.channel.send(embed=embed)
-
         log_embed = discord.Embed(title="📋 Роли в игре", color=0x2ecc71)
         for p in participants:
             log_embed.add_field(name=p.display_name, value=self.game.roles[p.id], inline=True)
         await self.game.send_creator_log(log_embed)
-
         await self.game.start_night()
 
     @discord.ui.button(label="❌ Отменить игру", style=discord.ButtonStyle.danger, row=1)
@@ -909,8 +1052,7 @@ class MafiaRegistrationView(discord.ui.View):
 @commands.command(name="голос")
 async def vote(ctx, member: discord.Member):
     game = ctx.bot.mafia_game if hasattr(ctx.bot, 'mafia_game') else None
-    if not game or game.game_over or game.night_phase:
-        return
+    if not game or game.game_over or game.night_phase: return
     if member == ctx.author:
         await ctx.send("❌ За себя нельзя!", delete_after=5)
         return
@@ -920,7 +1062,6 @@ async def vote(ctx, member: discord.Member):
     if ctx.author.id in game.votes:
         await ctx.send("❌ Вы уже проголосовали!", delete_after=5)
         return
-    
     if member.id not in game.votes:
         game.votes[member.id] = []
     game.votes[member.id].append(ctx.author.id)
@@ -934,7 +1075,13 @@ async def mafia_config(interaction: discord.Interaction, mafia: int = 1, doctor:
     mafia_configs[interaction.guild_id] = {"mafia": mafia, "doctor": doctor, "detective": detective, "barman": barman, "harlot": harlot}
     await interaction.response.send_message(f"✅ Настройки обновлены!\nМафия: {mafia}, Доктор: {doctor}, Детектив: {detective}, Бармен: {barman}, Путана: {harlot}", ephemeral=True)
 
-# ==================== ОСТАЛЬНЫЕ ТВОИ ИСХОДНЫЕ СЛЭШ-КОМАНДЫ ====================
+# ==================== ОСТАЛЬНЫЕ СЛЭШ-КОМАНДЫ ====================
+@app_commands.command(name="mcstatus", description="Показать статус и график онлайна Minecraft")
+async def mcstatus_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    await update_status_message(interaction.client)
+    await interaction.followup.send("📊 Данные мониторинга в канале успешно обновлены!", ephemeral=True)
+
 @app_commands.command(name="lk", description="📊 Показать личный кабинет (свой или другого игрока)")
 @app_commands.describe(player="Никнейм или ID игрока (оставьте пустым для своего профиля)")
 async def lk(interaction: discord.Interaction, player: str = None):
@@ -1733,7 +1880,9 @@ class WelcomeButtonsView(discord.ui.View):
         g_id = guild_id if guild_id else '@me'
         self.add_item(discord.ui.Button(label="📢 Новости", style=discord.ButtonStyle.link, url=f"https://discord.com/channels/{g_id}/1505126425022300275", row=0))
         self.add_item(discord.ui.Button(label="💬 Основной Чат", style=discord.ButtonStyle.link, url=f"https://discord.com/channels/{g_id}/1505239843486306374", row=0))
-        self.add_item(discord.ui.Button(label="🗺️ Навигация", style=discord.ButtonStyle.link, url=f"https://discord.com/channels/{g_id}/1520119059566559282", row=0))
+        self.add_item(discord.ui.Button(label="📜 Законы сервера", style=discord.ButtonStyle.link, url=f"https://discord.com/channels/{g_id}/1523064602080841728", row=1))
+        self.add_item(discord.ui.Button(label="📚 Информация", style=discord.ButtonStyle.link, url=f"https://discord.com/channels/{g_id}/1519998391390834698", row=1))
+        self.add_item(discord.ui.Button(label="🛠️ Тех. Поддержка", style=discord.ButtonStyle.link, url=f"https://discord.com/channels/{g_id}/1526688069464625305", row=2))
 
 class IdeaModal(discord.ui.Modal, title="💡 Подача предложения"):
     idea_title = discord.ui.TextInput(label="Суть идеи", placeholder="Кратко изложи суть предложения...", max_length=100)
@@ -1969,7 +2118,7 @@ class KingdomBot(commands.Bot):
 
     async def setup_hook(self):
         commands_list = [
-            marriage_propose, marriage_divorce, marriage_profile, set_dr, get_dr,
+            mcstatus_cmd, marriage_propose, marriage_divorce, marriage_profile, set_dr, get_dr,
             mafia_cmd, mafia_config, lk, bind, chance, sync_cmd, test_welcome, remind, badwords,
             warnlist, give_temp_role, warn, unwarn, mute, unmute, ban, unban,
             delete, staff, setup_support, setup_applications, messages, top,
@@ -1984,14 +2133,65 @@ class KingdomBot(commands.Bot):
         self.add_view(ApplicationView())
         self.add_view(IdeaVotingView())
 
+    async def get_random_gif_from_thread(self, thread_id: int):
+        try:
+            thread = self.get_channel(thread_id)
+            if not thread: return None
+            gifs = []
+            async for msg in thread.history(limit=50):
+                for att in msg.attachments:
+                    if att.content_type and att.content_type.startswith('image/'):
+                        gifs.append(att.url)
+            return random.choice(gifs) if gifs else None
+        except:
+            return None
+
     async def on_ready(self):
         print(f"✅ Бот {self.user} успешно запущен и готов к работе!")
         counts = load_message_counts()
         for uid, count in counts.items():
             self.user_level_cache[int(uid)] = get_level(count)
 
+    async def on_member_join(self, member):
+        # Выдача роли
+        role = member.guild.get_role(UNVERIFIED_ROLE_ID)
+        if role:
+            await member.add_roles(role)
+        
+        # Приветствие
+        channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
+        if channel:
+            banner_file = create_welcome_banner(member.display_name)
+            embed = discord.Embed(
+                title="👑 Новый Странник ступил в Kingdom of Joy!",
+                description=f"Приветствуем тебя, {member.mention}!\nЗагляни в <#1520119059566559282> для навигации.",
+                color=0x7864c8,
+                timestamp=datetime.now(MSK)
+            )
+            embed.set_image(url="attachment://welcome_banner.png")
+            view = WelcomeButtonsView(member.guild.id)
+            await channel.send(content=f"👋 {member.mention}", embed=embed, file=banner_file, view=view)
+
     async def on_message(self, message):
         if message.author.bot: return
+        
+        # 1. Автоматическое создание ветки
+        if message.channel.id == MEDIA_CHANNEL_ID and message.author.id != self.user.id:
+            try:
+                await message.create_thread(name="Комментарии", auto_archive_duration=1440)
+            except:
+                pass
+
+        # 2. Ответ гифками
+        content = message.content.lower()
+        if "доброе утро" in content:
+            gif = await self.get_random_gif_from_thread(GOOD_MORNING_THREAD)
+            if gif: await message.channel.send(gif)
+            else: await message.channel.send("Гифок доброго утра нету 😢")
+        if "доброй ночи" in content:
+            gif = await self.get_random_gif_from_thread(GOOD_NIGHT_THREAD)
+            if gif: await message.channel.send(gif)
+            else: await message.channel.send("Гифок доброй ночи нету 😢")
 
         badwords_data = load_json(BADWORDS_FILE, {})
         words = badwords_data.get("words", [])
@@ -2048,6 +2248,34 @@ class KingdomBot(commands.Bot):
 
 bot = KingdomBot()
 
+# ==================== ТАСКИ ПО РАСПИСАНИЮ ====================
+@tasks.loop(minutes=2)
+async def auto_update_status_task():
+    try:
+        await update_status_message(bot)
+    except Exception as e:
+        print(f"⚠️ Ошибка в автообновлении мониторинга: {e}")
+        traceback.print_exc()
+
+@auto_update_status_task.before_loop
+async def before_auto_update():
+    await asyncio.sleep(5)
+
+@tasks.loop(minutes=1)
+async def status_scheduler():
+    now = datetime.now(MSK)
+    # С 21:00 до 8:00 - неактивен, иначе - онлайн
+    if now.hour >= 21 or now.hour < 8:
+        if bot.status != discord.Status.idle:
+            await bot.change_presence(status=discord.Status.idle, activity=discord.Game(name="Неактивен"))
+    else:
+        if bot.status != discord.Status.online:
+            await bot.change_presence(status=discord.Status.online, activity=discord.Game(name="Kingdom of Joy"))
+
+@status_scheduler.before_loop
+async def before_status_scheduler():
+    await bot.wait_until_ready()
+
 @tasks.loop(minutes=1)
 async def reminders_loop():
     reminders = load_json(REMINDERS_FILE, [])
@@ -2072,6 +2300,8 @@ async def before_reminders():
 
 async def main():
     async with bot:
+        auto_update_status_task.start()
+        status_scheduler.start()
         reminders_loop.start()
         await bot.start(TOKEN)
 
