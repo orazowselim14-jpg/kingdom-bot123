@@ -383,7 +383,7 @@ def generate_double_graph(history_data, max_slots=100):
     players_24 = [item[1] for item in data_24h]
     ax24.plot(times_24, players_24, color='#7864c8', linewidth=2)
     ax24.fill_between(times_24, players_24, color='#7864c8', alpha=0.25)
-    ax24.set_title("📊 ИСТОРИЯ ОНЛАЙНА ЗА 24 ЧАСА (ИНТЕРВАЛ 2 МИНУТЫ)", fontsize=9, color='#808080', pad=8)
+    ax24.set_title("ИСТОРИЯ ОНЛАЙНА ЗА 24 ЧАСА (ИНТЕРВАЛ 2 МИНУТЫ)", fontsize=9, color='#808080', pad=8)
     ax24.yaxis.set_major_locator(MaxNLocator(integer=True))
     ax24.set_ylim(0, max(max_slots, max(players_24) + 2))
     step_24 = max(1, len(times_24) // 12)
@@ -403,7 +403,7 @@ def generate_double_graph(history_data, max_slots=100):
     players_1h = [item[1] for item in data_1h]
     ax1h.plot(times_1h, players_1h, color='#2ecc71', marker='o', linewidth=2, markersize=4)
     ax1h.fill_between(times_1h, players_1h, color='#2ecc71', alpha=0.25)
-    ax1h.set_title("⚡ ДЕТАЛИЗАЦИЯ ЗА ПОСЛЕДНИЙ 1 ЧАС", fontsize=9, color='#808080', pad=8)
+    ax1h.set_title("ДЕТАЛИЗАЦИЯ ЗА ПОСЛЕДНИЙ 1 ЧАС", fontsize=9, color='#808080', pad=8)
     ax1h.yaxis.set_major_locator(MaxNLocator(integer=True))
     ax1h.set_ylim(0, max(max_slots, max(players_1h) + 2))
     step_1h = max(1, len(times_1h) // 4)
