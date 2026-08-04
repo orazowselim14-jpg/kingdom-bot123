@@ -59,7 +59,7 @@ MONITORING_CHANNEL_ID = 1526686756580229200
 EXCLUDED_LOG_CHANNEL = 1505543466426437712
 BOT_ID = 1521131389229994165
 
-# ==================== ДОБАВЛЕННЫЕ КОНСТАНТЫ ИЗ MC_STATUS ====================
+# ==================== КОНСТАНТЫ МОНИТОРИНГА MINECRAFT ====================
 SERVER_IP = "45.152.160.92:25727"
 DISPLAY_DOMAINS = ["balkangrief.burmalda.me:25727", "kingdomofjoy.gamepvp.ru:25727"]
 
@@ -502,7 +502,7 @@ async def update_status_message(bot: commands.Bot):
         print(f"❌ Критическая ошибка в update_status_message: {e}")
         traceback.print_exc()
 
-# ==================== СИСТЕМА ВЕРИФИКАЦИИ (НОВАЯ) ====================
+# ==================== СИСТЕМА ВЕРИФИКАЦИИ ====================
 class VerifyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -2160,6 +2160,72 @@ class ApplicationVerdictView(discord.ui.View):
         except Exception as e:
             await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
 
+# ==================== НОВЫЕ КОМАНДЫ ДЛЯ ГИФОК ====================
+@app_commands.command(name="add_gif", description="Добавить гифку в тематическую ветку (Только для руководства)")
+@app_commands.describe(thread_type="В какую ветку добавить", gif="Прикрепите GIF файл")
+@app_commands.choices(thread_type=[
+    app_commands.Choice(name="Доброе утро", value="morning"),
+    app_commands.Choice(name="Доброй ночи", value="night")
+])
+async def add_gif(interaction: discord.Interaction, thread_type: str, gif: discord.Attachment):
+    if not is_creator_or_founder(interaction.user) and not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Только руководство может добавлять гифки.", ephemeral=True)
+        return
+    
+    if not gif.content_type or not gif.content_type.startswith('image/'):
+        await interaction.response.send_message("❌ Прикрепите корректный файл изображения/GIF.", ephemeral=True)
+        return
+
+    thread_id = GOOD_MORNING_THREAD if thread_type == "morning" else GOOD_NIGHT_THREAD
+    thread = interaction.guild.get_thread(thread_id)
+    if not thread:
+        try:
+            thread = await interaction.guild.fetch_channel(thread_id)
+        except:
+            await interaction.response.send_message("❌ Не удалось найти указанную ветку.", ephemeral=True)
+            return
+    
+    try:
+        await thread.send(file=await gif.to_file())
+        await interaction.response.send_message(f"✅ Гифка успешно добавлена в ветку {'доброго утра' if thread_type == 'morning' else 'доброй ночи'}!", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Ошибка при отправке гифки в ветку: {e}", ephemeral=True)
+
+@app_commands.command(name="remove_gif", description="Удалить гифку из тематической ветки по ссылке (Только для руководства)")
+@app_commands.describe(thread_type="Из какой ветки удалить", gif_url="Ссылка на гифку, которую нужно удалить")
+@app_commands.choices(thread_type=[
+    app_commands.Choice(name="Доброе утро", value="morning"),
+    app_commands.Choice(name="Доброй ночи", value="night")
+])
+async def remove_gif(interaction: discord.Interaction, thread_type: str, gif_url: str):
+    if not is_creator_or_founder(interaction.user) and not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Только руководство может удалять гифки.", ephemeral=True)
+        return
+
+    thread_id = GOOD_MORNING_THREAD if thread_type == "morning" else GOOD_NIGHT_THREAD
+    thread = interaction.guild.get_thread(thread_id)
+    if not thread:
+        try:
+            thread = await interaction.guild.fetch_channel(thread_id)
+        except:
+            await interaction.response.send_message("❌ Не удалось найти указанную ветку.", ephemeral=True)
+            return
+
+    found = False
+    try:
+        async for msg in thread.history(limit=200):
+            for att in msg.attachments:
+                if att.url == gif_url:
+                    await msg.delete()
+                    await interaction.response.send_message(f"✅ Гифка с URL `{gif_url}` успешно удалена из ветки.", ephemeral=True)
+                    found = True
+                    break
+            if found: break
+        if not found:
+            await interaction.response.send_message("❌ Гифка с указанной ссылкой не найдена в последних 200 сообщениях ветки.", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Ошибка при удалении гифки: {e}", ephemeral=True)
+
 # ==================== ИНИЦИАЛИЗАЦИЯ БОТА ====================
 class KingdomBot(commands.Bot):
     def __init__(self):
@@ -2176,7 +2242,8 @@ class KingdomBot(commands.Bot):
             delete, staff, setup_support, setup_applications, messages, top,
             setmessages, addmessages, resetmessages, send_cmd, addgroup,
             removegroup, listgroups, setbalance, addbalance, takebalance,
-            setrelic, addrelic, takerelic, resetplayer
+            setrelic, addrelic, takerelic, resetplayer,
+            add_gif, remove_gif  # <--- Добавленные команды
         ]
         for cmd in commands_list:
             self.tree.add_command(cmd)
