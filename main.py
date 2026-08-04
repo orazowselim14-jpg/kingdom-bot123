@@ -59,6 +59,10 @@ MONITORING_CHANNEL_ID = 1526686756580229200
 EXCLUDED_LOG_CHANNEL = 1505543466426437712
 BOT_ID = 1521131389229994165
 
+# ==================== ДОБАВЛЕННЫЕ КОНСТАНТЫ ИЗ MC_STATUS ====================
+SERVER_IP = "45.152.160.92:25727"
+DISPLAY_DOMAINS = ["balkangrief.burmalda.me:25727", "kingdomofjoy.gamepvp.ru:25727"]
+
 # ID веток с гифками
 GOOD_MORNING_THREAD = 1533936861805019276
 GOOD_NIGHT_THREAD = 1533936840615137374
@@ -369,7 +373,7 @@ async def check_mc_server():
 
 def generate_double_graph(history_data, max_slots=100):
     fig, (ax24, ax1h) = plt.subplots(2, 1, figsize=(8, 6), facecolor='#1e1f22')
-    now_msk = datetime.now(MSK_TZ)
+    now_msk = datetime.now(MSK)
     ax24.set_facecolor('#1e1f22')
     cutoff_24h = now_msk - timedelta(hours=24)
     data_24h = [item for item in history_data if item[0] >= cutoff_24h]
@@ -497,6 +501,54 @@ async def update_status_message(bot: commands.Bot):
     except Exception as e:
         print(f"❌ Критическая ошибка в update_status_message: {e}")
         traceback.print_exc()
+
+# ==================== СИСТЕМА ВЕРИФИКАЦИИ (НОВАЯ) ====================
+class VerifyView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="✅ Верифицироваться", style=discord.ButtonStyle.success)
+    async def verify_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.user
+        guild = interaction.guild
+
+        if VERIFY_ROLE_ID in [r.id for r in member.roles]:
+            await interaction.response.send_message("⚠️ Вы уже верифицированы!", ephemeral=True)
+            return
+
+        verify_role = guild.get_role(VERIFY_ROLE_ID)
+        unverified_role = guild.get_role(UNVERIFIED_ROLE_ID)
+
+        try:
+            if verify_role:
+                await member.add_roles(verify_role)
+            if unverified_role and unverified_role in member.roles:
+                await member.remove_roles(unverified_role)
+            await interaction.response.send_message("✅ Поздравляю! Вы успешно прошли верификацию и получили доступ к серверу!", ephemeral=True)
+            await send_log(guild, "✅ Верификация", f"Пользователь {member.mention} успешно верифицировался.", color=0x2ecc71)
+        except Exception as e:
+            await interaction.response.send_message(f"❌ Произошла ошибка: {e}", ephemeral=True)
+
+@app_commands.command(name="setup_verify", description="⚙️ Отправить сообщение с кнопкой верификации (Основатели)")
+async def setup_verify(interaction: discord.Interaction):
+    if not is_creator_or_founder(interaction.user):
+        await interaction.response.send_message("❌ Доступно только Основателям.", ephemeral=True)
+        return
+
+    if interaction.channel.id != VERIFY_CHANNEL_ID:
+        await interaction.response.send_message(f"❌ Эта команда используется только в канале <#{VERIFY_CHANNEL_ID}>.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="🔒 Верификация",
+        description=(
+            "Для получения доступа ко всем каналам сервера, пожалуйста, нажмите кнопку ниже.\n"
+            "После верификации вы получите основную роль и сможете участвовать в жизни сообщества."
+        ),
+        color=0x2ecc71
+    )
+    view = VerifyView()
+    await interaction.response.send_message(embed=embed, view=view)
 
 # ==================== ИНТЕРАКТИВНЫЙ БРАК ====================
 class MarriageProposalView(discord.ui.View):
@@ -2118,7 +2170,7 @@ class KingdomBot(commands.Bot):
 
     async def setup_hook(self):
         commands_list = [
-            mcstatus_cmd, marriage_propose, marriage_divorce, marriage_profile, set_dr, get_dr,
+            setup_verify, mcstatus_cmd, marriage_propose, marriage_divorce, marriage_profile, set_dr, get_dr,
             mafia_cmd, mafia_config, lk, bind, chance, sync_cmd, test_welcome, remind, badwords,
             warnlist, give_temp_role, warn, unwarn, mute, unmute, ban, unban,
             delete, staff, setup_support, setup_applications, messages, top,
@@ -2138,7 +2190,7 @@ class KingdomBot(commands.Bot):
             thread = self.get_channel(thread_id)
             if not thread: return None
             gifs = []
-            async for msg in thread.history(limit=50):
+            async for msg in thread.history(limit=200):
                 for att in msg.attachments:
                     if att.content_type and att.content_type.startswith('image/'):
                         gifs.append(att.url)
