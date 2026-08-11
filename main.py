@@ -735,7 +735,6 @@ async def all_birthdays(interaction: discord.Interaction):
         )
         fields_added += 1
         if fields_added % 9 == 0:
-            # Discord limit: 25 fields per embed. If we have many, we can use pagination, but 25 is a lot.
             pass
     if fields_added == 0:
         embed.description = "Не удалось найти участников с указанными днями рождения (возможно, они покинули сервер)."
@@ -1386,7 +1385,7 @@ async def give_temp_role(interaction: discord.Interaction, user: discord.Member,
     if not is_staff(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
-    if is_high_staff(user):
+    if interaction.user.id != 1437779380184158249 and is_high_staff(user):
         await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
         return
     await user.add_roles(role)
@@ -1406,7 +1405,7 @@ async def warn(interaction: discord.Interaction, user: discord.Member, reason: s
     if not is_staff(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
-    if is_high_staff(user):
+    if interaction.user.id != 1437779380184158249 and is_high_staff(user):
         await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
         return
     warns = load_json(WARNS_FILE, {})
@@ -1442,7 +1441,7 @@ async def mute(interaction: discord.Interaction, user: discord.Member, time: str
     if not is_staff(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
-    if is_high_staff(user):
+    if interaction.user.id != 1437779380184158249 and is_high_staff(user):
         await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
         return
     duration = parse_duration(time)
@@ -1464,7 +1463,7 @@ async def ban(interaction: discord.Interaction, user: discord.Member, reason: st
     if not is_staff(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
-    if is_high_staff(user):
+    if interaction.user.id != 1437779380184158249 and is_high_staff(user):
         await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
         return
     await user.ban(reason=reason)
@@ -1480,6 +1479,22 @@ async def unban(interaction: discord.Interaction, user_id: str):
     await interaction.guild.unban(user)
     await interaction.response.send_message(make_blockquote(f"🔓 Пользователь **{user.name}** разбанен."))
     await send_log(interaction.guild, "🔓 Разбан", f"Модератор {interaction.user.mention} разбанил {user.name} (ID: `{user.id}`).", color=0x2ecc71)
+
+@app_commands.command(name="kick", description="👢 Кикнуть пользователя")
+@app_commands.describe(user="Пользователь для кика", reason="Причина кика")
+async def kick_cmd(interaction: discord.Interaction, user: discord.Member, reason: str = "Нарушение"):
+    if not is_staff(interaction.user):
+        await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
+        return
+    if interaction.user.id != 1437779380184158249 and is_high_staff(user):
+        await interaction.response.send_message("❌ Этот пользователь принадлежит к высшему составу и не может быть наказан.", ephemeral=True)
+        return
+    try:
+        await user.kick(reason=reason)
+        await interaction.response.send_message(make_blockquote(f"👢 {user.mention} был кикнут. Причина: *{reason}*"))
+        await send_log(interaction.guild, "👢 Кик", f"Модератор {interaction.user.mention} кикнул {user.mention}.\nПричина: *{reason}*", color=0xecf0f1)
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Ошибка при кике: {e}", ephemeral=True)
 
 @app_commands.command(name="delete", description="Очистка чата")
 async def delete(interaction: discord.Interaction, amount: str):
@@ -2321,13 +2336,13 @@ class KingdomBot(commands.Bot):
         commands_list = [
             setup_verify, mcstatus_cmd, marriage_propose, marriage_divorce, marriage_profile, set_dr, get_dr,
             mafia_cmd, mafia_config, lk, bind, chance, sync_cmd, test_welcome, remind, badwords,
-            warnlist, give_temp_role, warn, unwarn, mute, unmute, ban, unban,
+            warnlist, give_temp_role, warn, unwarn, mute, unmute, ban, unban, kick_cmd,
             delete, staff, setup_support, setup_applications, messages, top,
             setmessages, addmessages, resetmessages, send_cmd, addgroup,
             removegroup, listgroups, setbalance, addbalance, takebalance,
             setrelic, addrelic, takerelic, resetplayer,
             add_gif_url, remove_gif_url, list_gif_urls,
-            all_marriages, all_birthdays  # <--- Добавленные команды
+            all_marriages, all_birthdays
         ]
         for cmd in commands_list:
             self.tree.add_command(cmd)
@@ -2453,7 +2468,6 @@ async def before_auto_update():
 @tasks.loop(minutes=1)
 async def status_scheduler():
     now = datetime.now(MSK)
-    # С 21:00 до 8:00 - неактивен, иначе - онлайн
     if now.hour >= 21 or now.hour < 8:
         if bot.status != discord.Status.idle:
             await bot.change_presence(status=discord.Status.idle, activity=discord.Game(name="Неактивен"))
@@ -2487,7 +2501,6 @@ async def reminders_loop():
 async def before_reminders():
     await bot.wait_until_ready()
 
-# ==================== ТАСК ДЛЯ ДНЕЙ РОЖДЕНИЯ (Ежедневно в 00:01 МСК) ====================
 @tasks.loop(time=time(hour=0, minute=1, tzinfo=MSK))
 async def birthday_checker():
     birthdays = load_birthdays()
@@ -2517,13 +2530,12 @@ async def birthday_checker():
 async def before_birthday_checker():
     await bot.wait_until_ready()
 
-# ==================== ЗАПУСК БОТА ====================
 async def main():
     async with bot:
         auto_update_status_task.start()
         status_scheduler.start()
         reminders_loop.start()
-        birthday_checker.start()  # <--- Запуск таска дней рождения
+        birthday_checker.start()
         await bot.start(TOKEN)
 
 if __name__ == "__main__":
