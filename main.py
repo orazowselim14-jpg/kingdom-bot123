@@ -4,7 +4,7 @@ from discord import app_commands
 from config import TOKEN, SFTP_HOST, SFTP_PORT, SFTP_USER, SFTP_PASSWORD, SFTP_REMOTE_PATH
 import asyncio
 import random
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time
 import json
 import os
 import io
@@ -31,6 +31,7 @@ VERIFY_MSG_FILE = "verify_msg.json"
 APPLICATIONS_CHANNEL_ID = 1530237443767533748
 ROLE_MAPPER = 1525487051544203395
 ROLE_MODERATOR = 1505275521825771520
+CHAT_MODERATOR_ROLE_ID = 1536729603522170961
 ROLE_CINEMA = 1505250838053126345
 ROLE_GIRL = 1505251541039321290
 HIGHER_ROLES = [1526681612337549343, 1505438802653741096, 1530235500886102216, 1505235504826814535]
@@ -63,17 +64,14 @@ BOT_ID = 1521131389229994165
 SERVER_IP = "45.152.160.92:25727"
 DISPLAY_DOMAINS = ["balkangrief.burmalda.me:25727", "kingdomofjoy.gamepvp.ru:25727"]
 
-# ID веток с гифками
-GOOD_MORNING_THREAD = 1533936861805019276
-GOOD_NIGHT_THREAD = 1533936840615137374
+# ==================== ФАЙЛЫ ДЛЯ ГИФОК ====================
+GIF_STORAGE_FILE = "gif_storage.json"
 
 # Файлы для мониторинга МЦ
 MSG_ID_FILE = "mc_status_msg_id.txt"
 HISTORY_FILE = "online_history.json"
 online_history = []
 
-BALKAN_TRIGGERS = ['БАЛКАН', 'балкан', 'balkan', 'BALKAN', 'Balkan', 'Балкан']
-SPECIAL_TRIGGERS = ['Вова', 'vovancho', 'вован', 'вова', 'вовчек', 'ВОВА', 'харчек', 'харута', 'ХАРУТА', 'haryta', 'Haryta']
 CUSTOM_REACTIONS = [
     discord.PartialEmoji(name="e1", id=1506903029671137390),
     discord.PartialEmoji(name="e2", id=1506902413574012938),
@@ -194,6 +192,11 @@ def is_high_staff(member: discord.Member) -> bool:
     if not member:
         return False
     return any(r.id in HIGHER_ROLES for r in member.roles) or member.id in CREATOR_AND_ROLE_IDS
+
+def is_staff(member: discord.Member) -> bool:
+    if not member:
+        return False
+    return is_high_staff(member) or any(r.id == CHAT_MODERATOR_ROLE_ID for r in member.roles)
 
 async def send_log(guild: discord.Guild, title: str, description: str, color: int = 0x7864c8, fields: list = None):
     if not guild: return
@@ -548,7 +551,8 @@ async def setup_verify(interaction: discord.Interaction):
         color=0x2ecc71
     )
     view = VerifyView()
-    await interaction.response.send_message(embed=embed, view=view)
+    await interaction.response.defer(ephemeral=True)
+    await interaction.followup.send(embed=embed, view=view)
 
 # ==================== ИНТЕРАКТИВНЫЙ БРАК ====================
 class MarriageProposalView(discord.ui.View):
@@ -640,11 +644,41 @@ async def marriage_profile(interaction: discord.Interaction, user: discord.Membe
     embed.set_footer(text="Kingdom of Joy | Браки", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
     await interaction.response.send_message(embed=embed)
 
-@app_commands.command(name="setdr", description="🎂 Установить дату своего рождения (ДД.ММ)")
-@app_commands.describe(date="Дата рождения в формате ДД.ММ (например, 15.08)")
+@app_commands.command(name="все_браки", description="💕 Показать список всех браков на сервере")
+async def all_marriages(interaction: discord.Interaction):
+    marriages = load_marriages()
+    if not marriages:
+        await interaction.response.send_message("💔 На сервере пока нет ни одного брака.", ephemeral=True)
+        return
+    embed = discord.Embed(title="💕 Список браков", color=0xff69b4, timestamp=datetime.now(MSK))
+    processed = set()
+    desc = []
+    for uid_str, data in marriages.items():
+        uid = int(uid_str)
+        partner_id = data["partner"]
+        if uid in processed or partner_id in processed:
+            continue
+        processed.add(uid)
+        processed.add(partner_id)
+        p1 = interaction.guild.get_member(uid)
+        p2 = interaction.guild.get_member(partner_id)
+        p1_str = p1.mention if p1 else f"<@{uid}>"
+        p2_str = p2.mention if p2 else f"<@{partner_id}>"
+        date_ts = data["date"]
+        date_str = f"<t:{date_ts}:D>"
+        desc.append(f"{p1_str} 💞 {p2_str}\n📅 {date_str}")
+    if not desc:
+        embed.description = "Не удалось отобразить браки (возможно, участники покинули сервер)."
+    else:
+        embed.description = "\n\n".join(desc)
+    embed.set_footer(text="Kingdom of Joy | Браки", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+    await interaction.response.send_message(embed=embed)
+
+@app_commands.command(name="setdr", description="🎂 Установить дату своего рождения (ДД.ММ или ДД.ММ.ГГГГ)")
+@app_commands.describe(date="Дата рождения в формате ДД.ММ (например, 15.08) или ДД.ММ.ГГГГ (15.08.2005)")
 async def set_dr(interaction: discord.Interaction, date: str):
-    if not re.match(r"^\d{2}\.\d{2}$", date):
-        await interaction.response.send_message("❌ Неверный формат! Используйте формат `ДД.ММ` (например, `15.08`).", ephemeral=True)
+    if not re.match(r"^\d{2}\.\d{2}(\.\d{4})?$", date):
+        await interaction.response.send_message("❌ Неверный формат! Используйте `ДД.ММ` (например, `15.08`) или `ДД.ММ.ГГГГ` (например, `15.08.2005`).", ephemeral=True)
         return
     birthdays = load_birthdays()
     birthdays[str(interaction.user.id)] = date
@@ -661,6 +695,52 @@ async def get_dr(interaction: discord.Interaction, user: discord.Member = None):
         await interaction.response.send_message(make_blockquote(f"🎂 У пользователя {target.mention} не указана дата рождения."), ephemeral=True)
         return
     await interaction.response.send_message(make_blockquote(f"🎂 День рождения {target.mention}: **{bdate}**"))
+
+@app_commands.command(name="все_др", description="🎂 Показать список всех дней рождения на сервере")
+async def all_birthdays(interaction: discord.Interaction):
+    birthdays = load_birthdays()
+    if not birthdays:
+        await interaction.response.send_message("🎂 На сервере пока нет сохранённых дней рождения.", ephemeral=True)
+        return
+    embed = discord.Embed(title="🎂 Список дней рождения", color=0x5865F2, timestamp=datetime.now(MSK))
+    today = datetime.now(MSK).strftime("%d.%m")
+    fields_added = 0
+    for uid_str, date in birthdays.items():
+        uid = int(uid_str)
+        member = interaction.guild.get_member(uid)
+        if not member:
+            continue
+        avatar_url = member.display_avatar.url
+        date_parts = date.split(".")
+        is_today = date.startswith(today)
+        if len(date_parts) == 3: # DD.MM.YYYY
+            day, month, year = date_parts
+            display_date = f"{day}.{month}"
+            try:
+                current_year = datetime.now(MSK).year
+                age = current_year - int(year)
+                age_str = f"{age} лет"
+                if is_today:
+                    age_str += " 🎂 (Сегодня!)"
+            except:
+                age_str = "Неизвестно"
+        else: # DD.MM
+            display_date = date
+            age_str = "Не указан"
+        today_str = " 🎉 СЕГОДНЯ! 🎉" if is_today else ""
+        embed.add_field(
+            name=member.display_name,
+            value=f"📅 {display_date}{today_str}\n🎂 Возраст: {age_str}\n👤 [Аватар]({avatar_url})",
+            inline=True
+        )
+        fields_added += 1
+        if fields_added % 9 == 0:
+            # Discord limit: 25 fields per embed. If we have many, we can use pagination, but 25 is a lot.
+            pass
+    if fields_added == 0:
+        embed.description = "Не удалось найти участников с указанными днями рождения (возможно, они покинули сервер)."
+    embed.set_footer(text="Kingdom of Joy | Дни рождения", icon_url=interaction.guild.icon.url if interaction.guild.icon else None)
+    await interaction.response.send_message(embed=embed)
 
 # ==================== СИСТЕМА МАФИИ ====================
 mafia_configs = {}
@@ -1303,7 +1383,7 @@ async def warnlist(interaction: discord.Interaction):
 
 @app_commands.command(name="role", description="Выдать временную роль (например 10m, 2h)")
 async def give_temp_role(interaction: discord.Interaction, user: discord.Member, role: discord.Role, duration: str):
-    if not is_high_staff(interaction.user):
+    if not is_staff(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     if is_high_staff(user):
@@ -1323,7 +1403,7 @@ async def give_temp_role(interaction: discord.Interaction, user: discord.Member,
 
 @app_commands.command(name="warn", description="Выдать варн")
 async def warn(interaction: discord.Interaction, user: discord.Member, reason: str = "Нарушение"):
-    if not is_high_staff(interaction.user):
+    if not is_staff(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     if is_high_staff(user):
@@ -1346,7 +1426,7 @@ async def warn(interaction: discord.Interaction, user: discord.Member, reason: s
 
 @app_commands.command(name="unwarn", description="Снять варн")
 async def unwarn(interaction: discord.Interaction, user: discord.Member):
-    if not is_high_staff(interaction.user):
+    if not is_staff(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     warns = load_json(WARNS_FILE, {})
@@ -1359,7 +1439,7 @@ async def unwarn(interaction: discord.Interaction, user: discord.Member):
 
 @app_commands.command(name="mute", description="Мут")
 async def mute(interaction: discord.Interaction, user: discord.Member, time: str, reason: str = "Нарушение"):
-    if not is_high_staff(interaction.user):
+    if not is_staff(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     if is_high_staff(user):
@@ -1372,7 +1452,7 @@ async def mute(interaction: discord.Interaction, user: discord.Member, time: str
 
 @app_commands.command(name="unmute", description="Размут")
 async def unmute(interaction: discord.Interaction, user: discord.Member):
-    if not is_high_staff(interaction.user):
+    if not is_staff(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     await user.timeout(None)
@@ -1381,7 +1461,7 @@ async def unmute(interaction: discord.Interaction, user: discord.Member):
 
 @app_commands.command(name="ban", description="Бан")
 async def ban(interaction: discord.Interaction, user: discord.Member, reason: str = "Нарушение"):
-    if not is_high_staff(interaction.user):
+    if not is_staff(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     if is_high_staff(user):
@@ -1393,7 +1473,7 @@ async def ban(interaction: discord.Interaction, user: discord.Member, reason: st
 
 @app_commands.command(name="unban", description="Разбан")
 async def unban(interaction: discord.Interaction, user_id: str):
-    if not is_high_staff(interaction.user):
+    if not is_staff(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     user = await interaction.client.fetch_user(int(user_id))
@@ -1403,7 +1483,7 @@ async def unban(interaction: discord.Interaction, user_id: str):
 
 @app_commands.command(name="delete", description="Очистка чата")
 async def delete(interaction: discord.Interaction, amount: str):
-    if not is_high_staff(interaction.user):
+    if not is_staff(interaction.user):
         await interaction.response.send_message("❌ У вас нет прав для выполнения этой команды.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
@@ -1421,7 +1501,7 @@ async def staff(interaction: discord.Interaction):
         rids = [r.id for r in m.roles]
         if FOUNDER_ROLE_ID in rids: founders.append(m)
         elif CREATOR_ROLE_ID in rids or m.id == 1437779380184158249: creators.append(m)
-        elif MODERATOR_ROLE_ID in rids: moderators.append(m)
+        elif MODERATOR_ROLE_ID in rids or CHAT_MODERATOR_ROLE_ID in rids: moderators.append(m)
     embed = discord.Embed(title="🛡️ Администрация Kingdom of Joy", color=0x2b2d31, timestamp=datetime.now(MSK))
     embed.add_field(name="👑 1. Основатели", value="\n".join([f"• <@{m.id}>" for m in founders]) if founders else "• *Нет*", inline=False)
     embed.add_field(name="✨ 2. Создатели", value="\n".join([f"• <@{m.id}>" for m in creators]) if creators else "• *Нет*", inline=False)
@@ -1925,6 +2005,75 @@ async def resetplayer(interaction: discord.Interaction, nickname: str):
     else:
         await interaction.followup.send("❌ Ошибка сохранения данных.")
 
+# ==================== НОВЫЕ КОМАНДЫ ДЛЯ ГИФОК ПО ССЫЛКАМ ====================
+GIF_STORAGE_FILE = "gif_storage.json"
+
+def load_gifs():
+    return load_json(GIF_STORAGE_FILE, {"morning": [], "night": []})
+
+def save_gifs(data):
+    save_json(GIF_STORAGE_FILE, data)
+
+@app_commands.command(name="add_gif_url", description="Добавить URL гифки в хранилище (Только для руководства)")
+@app_commands.describe(thread_type="В какую категорию добавить", gif_url="Прямая ссылка на гифку")
+@app_commands.choices(thread_type=[
+    app_commands.Choice(name="Доброе утро", value="morning"),
+    app_commands.Choice(name="Доброй ночи", value="night")
+])
+async def add_gif_url(interaction: discord.Interaction, thread_type: str, gif_url: str):
+    if not is_creator_or_founder(interaction.user) and not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Только руководство может добавлять гифки.", ephemeral=True)
+        return
+
+    gifs = load_gifs()
+    if gif_url in gifs[thread_type]:
+        await interaction.response.send_message("❌ Эта ссылка уже существует в данной категории.", ephemeral=True)
+        return
+
+    gifs[thread_type].append(gif_url)
+    save_gifs(gifs)
+    await interaction.response.send_message(f"✅ URL гифки успешно добавлен в категорию '{'доброе утро' if thread_type == 'morning' else 'доброй ночи'}'!", ephemeral=True)
+
+@app_commands.command(name="remove_gif_url", description="Удалить URL гифки из хранилища (Только для руководства)")
+@app_commands.describe(thread_type="Из какой категории удалить", gif_url="Прямая ссылка на гифку для удаления")
+@app_commands.choices(thread_type=[
+    app_commands.Choice(name="Доброе утро", value="morning"),
+    app_commands.Choice(name="Доброй ночи", value="night")
+])
+async def remove_gif_url(interaction: discord.Interaction, thread_type: str, gif_url: str):
+    if not is_creator_or_founder(interaction.user) and not is_high_staff(interaction.user):
+        await interaction.response.send_message("❌ Только руководство может удалять гифки.", ephemeral=True)
+        return
+
+    gifs = load_gifs()
+    if gif_url not in gifs[thread_type]:
+        await interaction.response.send_message("❌ Данная ссылка не найдена в указанной категории.", ephemeral=True)
+        return
+
+    gifs[thread_type].remove(gif_url)
+    save_gifs(gifs)
+    await interaction.response.send_message(f"✅ URL гифки успешно удалён из категории.", ephemeral=True)
+
+@app_commands.command(name="list_gif_urls", description="Показать все сохранённые URL гифок в категории")
+@app_commands.describe(thread_type="Выберите категорию")
+@app_commands.choices(thread_type=[
+    app_commands.Choice(name="Доброе утро", value="morning"),
+    app_commands.Choice(name="Доброй ночи", value="night")
+])
+async def list_gif_urls(interaction: discord.Interaction, thread_type: str):
+    gifs = load_gifs()
+    data = gifs[thread_type]
+    if not data:
+        await interaction.response.send_message(f"📭 В категории '{'доброе утро' if thread_type == 'morning' else 'доброй ночи'}' пока нет сохранённых гифок.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title=f"📋 Список URL гифок: {'Утро' if thread_type == 'morning' else 'Ночь'}",
+        description="\n".join([f"`{i+1}.` {url}" for i, url in enumerate(data)]),
+        color=0x5865F2
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
 # ==================== UI КОМПОНЕНТЫ И АНКЕТЫ ====================
 class WelcomeButtonsView(discord.ui.View):
     def __init__(self, guild_id: int = 0):
@@ -2160,72 +2309,6 @@ class ApplicationVerdictView(discord.ui.View):
         except Exception as e:
             await interaction.response.send_message(f"❌ Ошибка: {e}", ephemeral=True)
 
-# ==================== НОВЫЕ КОМАНДЫ ДЛЯ ГИФОК ====================
-@app_commands.command(name="add_gif", description="Добавить гифку в тематическую ветку (Только для руководства)")
-@app_commands.describe(thread_type="В какую ветку добавить", gif="Прикрепите GIF файл")
-@app_commands.choices(thread_type=[
-    app_commands.Choice(name="Доброе утро", value="morning"),
-    app_commands.Choice(name="Доброй ночи", value="night")
-])
-async def add_gif(interaction: discord.Interaction, thread_type: str, gif: discord.Attachment):
-    if not is_creator_or_founder(interaction.user) and not is_high_staff(interaction.user):
-        await interaction.response.send_message("❌ Только руководство может добавлять гифки.", ephemeral=True)
-        return
-    
-    if not gif.content_type or not gif.content_type.startswith('image/'):
-        await interaction.response.send_message("❌ Прикрепите корректный файл изображения/GIF.", ephemeral=True)
-        return
-
-    thread_id = GOOD_MORNING_THREAD if thread_type == "morning" else GOOD_NIGHT_THREAD
-    thread = interaction.guild.get_thread(thread_id)
-    if not thread:
-        try:
-            thread = await interaction.guild.fetch_channel(thread_id)
-        except:
-            await interaction.response.send_message("❌ Не удалось найти указанную ветку.", ephemeral=True)
-            return
-    
-    try:
-        await thread.send(file=await gif.to_file())
-        await interaction.response.send_message(f"✅ Гифка успешно добавлена в ветку {'доброго утра' if thread_type == 'morning' else 'доброй ночи'}!", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Ошибка при отправке гифки в ветку: {e}", ephemeral=True)
-
-@app_commands.command(name="remove_gif", description="Удалить гифку из тематической ветки по ссылке (Только для руководства)")
-@app_commands.describe(thread_type="Из какой ветки удалить", gif_url="Ссылка на гифку, которую нужно удалить")
-@app_commands.choices(thread_type=[
-    app_commands.Choice(name="Доброе утро", value="morning"),
-    app_commands.Choice(name="Доброй ночи", value="night")
-])
-async def remove_gif(interaction: discord.Interaction, thread_type: str, gif_url: str):
-    if not is_creator_or_founder(interaction.user) and not is_high_staff(interaction.user):
-        await interaction.response.send_message("❌ Только руководство может удалять гифки.", ephemeral=True)
-        return
-
-    thread_id = GOOD_MORNING_THREAD if thread_type == "morning" else GOOD_NIGHT_THREAD
-    thread = interaction.guild.get_thread(thread_id)
-    if not thread:
-        try:
-            thread = await interaction.guild.fetch_channel(thread_id)
-        except:
-            await interaction.response.send_message("❌ Не удалось найти указанную ветку.", ephemeral=True)
-            return
-
-    found = False
-    try:
-        async for msg in thread.history(limit=200):
-            for att in msg.attachments:
-                if att.url == gif_url:
-                    await msg.delete()
-                    await interaction.response.send_message(f"✅ Гифка с URL `{gif_url}` успешно удалена из ветки.", ephemeral=True)
-                    found = True
-                    break
-            if found: break
-        if not found:
-            await interaction.response.send_message("❌ Гифка с указанной ссылкой не найдена в последних 200 сообщениях ветки.", ephemeral=True)
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Ошибка при удалении гифки: {e}", ephemeral=True)
-
 # ==================== ИНИЦИАЛИЗАЦИЯ БОТА ====================
 class KingdomBot(commands.Bot):
     def __init__(self):
@@ -2243,7 +2326,8 @@ class KingdomBot(commands.Bot):
             setmessages, addmessages, resetmessages, send_cmd, addgroup,
             removegroup, listgroups, setbalance, addbalance, takebalance,
             setrelic, addrelic, takerelic, resetplayer,
-            add_gif, remove_gif  # <--- Добавленные команды
+            add_gif_url, remove_gif_url, list_gif_urls,
+            all_marriages, all_birthdays  # <--- Добавленные команды
         ]
         for cmd in commands_list:
             self.tree.add_command(cmd)
@@ -2251,19 +2335,6 @@ class KingdomBot(commands.Bot):
         self.add_view(SupportHubView())
         self.add_view(ApplicationView())
         self.add_view(IdeaVotingView())
-
-    async def get_random_gif_from_thread(self, thread_id: int):
-        try:
-            thread = self.get_channel(thread_id)
-            if not thread: return None
-            gifs = []
-            async for msg in thread.history(limit=200):
-                for att in msg.attachments:
-                    if att.content_type and att.content_type.startswith('image/'):
-                        gifs.append(att.url)
-            return random.choice(gifs) if gifs else None
-        except:
-            return None
 
     async def on_ready(self):
         print(f"✅ Бот {self.user} успешно запущен и готов к работе!")
@@ -2301,16 +2372,15 @@ class KingdomBot(commands.Bot):
             except:
                 pass
 
-        # 2. Ответ гифками
-        content = message.content.lower()
-        if "доброе утро" in content:
-            gif = await self.get_random_gif_from_thread(GOOD_MORNING_THREAD)
-            if gif: await message.channel.send(gif)
-            else: await message.channel.send("Гифок доброго утра нету 😢")
-        if "доброй ночи" in content:
-            gif = await self.get_random_gif_from_thread(GOOD_NIGHT_THREAD)
-            if gif: await message.channel.send(gif)
-            else: await message.channel.send("Гифок доброй ночи нету 😢")
+        # 2. Ответ гифками (НОВАЯ ЛОГИКА ПО URL)
+        content_lower = message.content.lower()
+        gifs = load_gifs()
+        if "доброе утро" in content_lower:
+            if gifs["morning"]:
+                await message.channel.send(random.choice(gifs["morning"]))
+        if "доброй ночи" in content_lower or "спокойной ночи" in content_lower:
+            if gifs["night"]:
+                await message.channel.send(random.choice(gifs["night"]))
 
         badwords_data = load_json(BADWORDS_FILE, {})
         words = badwords_data.get("words", [])
@@ -2417,11 +2487,43 @@ async def reminders_loop():
 async def before_reminders():
     await bot.wait_until_ready()
 
+# ==================== ТАСК ДЛЯ ДНЕЙ РОЖДЕНИЯ (Ежедневно в 00:01 МСК) ====================
+@tasks.loop(time=time(hour=0, minute=1, tzinfo=MSK))
+async def birthday_checker():
+    birthdays = load_birthdays()
+    now = datetime.now(MSK)
+    today_str = now.strftime("%d.%m")
+    channel = bot.get_channel(COMMUNICATION_CHANNEL_ID)
+    if not channel:
+        return
+    
+    for uid_str, date in birthdays.items():
+        if date.startswith(today_str):
+            try:
+                user = await bot.fetch_user(int(uid_str))
+                if user:
+                    embed = discord.Embed(
+                        title="🎂 С днём рождения! 🎂",
+                        description=f"Поздравляем {user.mention} с днём рождения!\nЖелаем счастья, здоровья и удачи! 🥳",
+                        color=0xffd700,
+                        timestamp=now
+                    )
+                    embed.set_thumbnail(url=user.display_avatar.url)
+                    await channel.send(content=user.mention, embed=embed)
+            except:
+                pass
+
+@birthday_checker.before_loop
+async def before_birthday_checker():
+    await bot.wait_until_ready()
+
+# ==================== ЗАПУСК БОТА ====================
 async def main():
     async with bot:
         auto_update_status_task.start()
         status_scheduler.start()
         reminders_loop.start()
+        birthday_checker.start()  # <--- Запуск таска дней рождения
         await bot.start(TOKEN)
 
 if __name__ == "__main__":
